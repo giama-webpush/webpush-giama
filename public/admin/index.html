@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Avisos WebPush · Panel</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="/brand/favicon.png">
+  <link rel="stylesheet" href="/css/brand.css">
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <div id="login" class="login oculto">
+    <form id="form-login" class="login-card" autocomplete="on">
+      <img src="/brand/logo.png" alt="Peugeot Giama" class="login-logo">
+      <h1>Panel de avisos</h1>
+      <div id="login-msg" class="alerta oculto"></div>
+      <label>Usuario<input name="username" autocomplete="username" required value="admin"></label>
+      <label>Contraseña<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn btn-primario" type="submit">Entrar</button>
+    </form>
+  </div>
+
+  <div id="app" class="app oculto">
+    <aside class="side">
+      <div class="side-brand"><img id="side-logo" src="/brand/logo.png" alt=""><span>Avisos WebPush</span></div>
+      <nav id="nav">
+        <a href="#/dashboard" data-v="dashboard">Tablero</a>
+        <a href="#/publico" data-v="publico">Público</a>
+        <a href="#/piezas" data-v="piezas">Piezas</a>
+        <a href="#/campanas" data-v="campanas">Campañas</a>
+        <a href="#/automatizaciones" data-v="automatizaciones">Automatizaciones</a>
+        <a href="#/links" data-v="links">Links de suscripción</a>
+        <a href="#/config" data-v="config">Configuración</a>
+      </nav>
+      <div class="side-foot"><span id="who"></span><button id="btn-logout" class="btn btn-texto" type="button">Salir</button></div>
+    </aside>
+    <main id="view" class="view"></main>
+  </div>
+  <div id="modal" class="modal oculto"><div class="modal-card" id="modal-card"></div></div>
+  <div id="toast" class="toast oculto"></div>
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

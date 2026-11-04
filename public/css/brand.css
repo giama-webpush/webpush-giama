@@ -1,0 +1,21 @@
+/* Identidad Peugeot Giama: azul #0074E8, negro, blancos y grises */
+:root {
+  --azul: #0074E8; --azul-osc: #005BB8; --negro: #000000; --blanco: #FFFFFF;
+  --g1: #F3F3F3; --g2: #E7E7E7; --g3: #ADAEB2; --g4: #606060; --g5: #3B3938;
+  --ok: #1E8E3E; --warn: #B26A00; --err: #C62828;
+  --radio: 10px;
+  --font: "Peugeot New", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { font-family: var(--font); color: var(--g5); background: var(--blanco); -webkit-font-smoothing: antialiased; line-height: 1.45; }
+a { color: var(--azul); }
+button, input, select, textarea { font: inherit; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 999px; padding: 12px 22px; font-weight: 600; cursor: pointer; text-decoration: none; transition: background .15s, opacity .15s; }
+.btn-primario { background: var(--azul); color: var(--blanco); }
+.btn-primario:hover { background: var(--azul-osc); }
+.btn-negro { background: var(--negro); color: var(--blanco); }
+.btn-borde { background: transparent; color: var(--negro); border: 1.5px solid var(--negro); }
+.btn-texto { background: transparent; color: var(--g4); padding: 8px 10px; text-decoration: underline; }
+.btn[disabled] { opacity: .5; cursor: not-allowed; }
+.oculto { display: none !important; }

@@ -1,0 +1,42 @@
+# Blueprint de Render (plan free). Base en Turso (libSQL) porque el disco del plan free no persiste.
+services:
+  - type: web
+    name: webpush-giama
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: APP_TIMEZONE
+        value: America/Argentina/Buenos_Aires
+      - key: BASE_URL            # ej. https://webpush-giama.onrender.com o tu dominio
+        sync: false
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD      # mínimo 8 caracteres
+        sync: false
+      - key: ADMIN_KEY           # API key para /api/* y /api/cron/tick
+        generateValue: true
+      - key: VAPID_PUBLIC_KEY    # npm run vapid -- --print (en tu máquina)
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT       # mailto:alguien@tudominio
+        sync: false
+      - key: TURSO_DATABASE_URL  # libsql://<base>-<org>.turso.io
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: PHONE_HASH_SECRET   # no cambiarlo nunca después de tener datos
+        generateValue: true
+      - key: MAX_UPLOAD_KB
+        value: "700"

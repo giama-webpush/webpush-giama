@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.git
+test/
+docs/capturas/
