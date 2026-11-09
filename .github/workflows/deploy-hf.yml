@@ -1,0 +1,48 @@
+name: Deploy to Hugging Face Space
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SPACE: giama-webpush/webpush-giama
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q huggingface_hub
+      - name: Create Space, set secrets and upload
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          S_ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          S_ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          S_PHONE_HASH_SECRET: ${{ secrets.PHONE_HASH_SECRET }}
+          S_VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          S_VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          S_VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          S_TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          S_TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, shutil, tempfile
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          space = os.environ["SPACE"]
+          api.create_repo(space, repo_type="space", space_sdk="docker", exist_ok=True, private=False)
+          for k in ["ADMIN_PASSWORD","ADMIN_KEY","PHONE_HASH_SECRET","VAPID_PUBLIC_KEY","VAPID_PRIVATE_KEY","VAPID_SUBJECT","TURSO_DATABASE_URL","TURSO_AUTH_TOKEN"]:
+              v = os.environ.get("S_"+k, "")
+              if v:
+                  api.add_space_secret(space, k, v)
+          variables = {"PORT":"7860","HOST":"0.0.0.0","NODE_ENV":"production","TRUST_PROXY":"true",
+                       "APP_TIMEZONE":"America/Argentina/Buenos_Aires","ADMIN_USER":"admin","MAX_UPLOAD_KB":"700",
+                       "BASE_URL":"https://giama-webpush-webpush-giama.hf.space"}
+          for k,v in variables.items():
+              api.add_space_variable(space, k, v)
+          d = tempfile.mkdtemp()
+          shutil.copytree(".", d, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git",".github","test","docs","hf","node_modules"))
+          shutil.copy("hf/README.md", os.path.join(d,"README.md"))
+          api.upload_folder(folder_path=d, repo_id=space, repo_type="space", commit_message="Deploy from GitHub", delete_patterns=["*"])
+          print("ok")
+          PY
