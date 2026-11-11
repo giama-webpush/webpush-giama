@@ -397,7 +397,7 @@ module.exports = function adminRoutes(ctx) {
     const x = (await db.run(`INSERT INTO campaigns(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`, ...keys.map((k) => c[k])));
     const id = Number(x.lastInsertRowid);
     audit(db, req.admin.username, 'campana_creada', { id, status: c.status });
-    if (c.status === 'programada' && !c.scheduled_at) setImmediate(() => sender.processCampaign(id));
+    if (c.status === 'programada' && !c.scheduled_at) await sender.launch(id);
     res.status(201).json({ id, status: c.status });
   });
 
@@ -408,7 +408,7 @@ module.exports = function adminRoutes(ctx) {
     const c = await campaignFromBody(req.body || {}, ex);
     const keys = Object.keys(c);
     await db.run(`UPDATE campaigns SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => c[k]), nowIso(), ex.id);
-    if (c.status === 'programada' && !c.scheduled_at) setImmediate(() => sender.processCampaign(ex.id));
+    if (c.status === 'programada' && !c.scheduled_at) await sender.launch(ex.id);
     res.json({ ok: true, status: c.status });
   });
 

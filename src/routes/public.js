@@ -61,7 +61,7 @@ module.exports = function publicRoutes(ctx) {
     res.status(result.created ? 201 : 200).json({ ok: true, created: result.created, manageToken: result.manageToken, phoneValid: result.phoneValid });
     if (result.created || result.reactivated) {
       const welcome = await db.get("SELECT * FROM automations WHERE type = 'welcome' AND enabled = 1 AND campaign_id IS NOT NULL");
-      if (welcome) sender.sendAutomation(welcome, result.id).catch((e) => logger.error('[welcome]', e.message));
+      if (welcome) { try { await sender.sendAutomation(welcome, result.id); } catch (e) { logger.error('[welcome]', e.message); } }
     }
   });
 

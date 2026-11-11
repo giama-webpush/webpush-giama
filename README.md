@@ -65,6 +65,8 @@ Todas están en [`.env.example`](.env.example). Las importantes:
 
 `UPLOADS_DIR` **no se usa**: las imágenes subidas se guardan dentro de la base (tabla `media`) para no depender del disco del hosting. También se puede usar una URL externa (https) en cada pieza.
 
+En **Vercel**, `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` son obligatorios (el filesystem no persiste). `TICK_BUDGET_MS` e `INLINE_SEND_MAX` aplican al envío por tandas. Detalle en la sección de despliegue en Vercel.
+
 Los secretos van **solo** en `.env` o en el panel de variables del hosting. Nunca en el repositorio.
 
 ---
@@ -123,7 +125,65 @@ Precisión del horario: una campaña programada sale como mucho ~5 min después 
 
 ---
 
-## 5. Docker / VPS
+
+## 5. Despliegue en Vercel (plan Hobby, gratis, sin tarjeta)
+
+Vercel no deja un proceso corriendo: cada pedido arranca (o reutiliza) una función con un tope de **10 segundos** en el plan Hobby, y el disco es **efímero**. Por eso:
+
+- La base **tiene que ser Turso**. Si falta `TURSO_DATABASE_URL` o `TURSO_AUTH_TOKEN`, la app no arranca (mensaje claro en los logs).
+- No hay `setInterval` ni programador en memoria. Las campañas programadas y los envíos grandes se procesan **por tandas** en cada llamada a `/api/cron/tick` (y, de yapa, en las visitas). Cada tanda termina holgada dentro de esos 10 s; el resto queda en la base y se retoma en el próximo ping.
+- Una campaña chica (hasta `INLINE_SEND_MAX`, por defecto 40 suscriptores) se puede enviar en el mismo pedido. Una grande queda encolada.
+- `BASE_URL` tiene que ser la URL pública `https://...` (links de clic, íconos e imágenes). Si falta, se usa `https://$VERCEL_URL` como respaldo, pero en producción definila vos (un deploy de preview tiene otra URL).
+
+### Variables a cargar en Vercel
+
+En *Project → Settings → Environment Variables* (Production, y Preview si querés probar):
+
+| Variable | Obligatoria | Notas |
+|---|---|---|
+| `BASE_URL` | sí (prod) | Ej. `https://avisos.tudominio.com.ar` o `https://webpush-giama.vercel.app` |
+| `NODE_ENV` | sí | `production` |
+| `ADMIN_PASSWORD` | sí | Mínimo 8 caracteres. Usuario `admin` si no definís `ADMIN_USER`. |
+| `ADMIN_KEY` | sí | API key para `/api/*` y el ping de `/api/cron/tick`. |
+| `VAPID_PUBLIC_KEY` | sí | Generadas una sola vez con `npm run vapid -- --print`. |
+| `VAPID_PRIVATE_KEY` | sí | **No las cambies nunca** después de tener suscriptores: si cambian, todas las suscripciones dejan de funcionar. |
+| `VAPID_SUBJECT` | sí | `mailto:alguien@tudominio.com.ar` |
+| `TURSO_DATABASE_URL` | sí | `libsql://...turso.io` |
+| `TURSO_AUTH_TOKEN` | sí | Token de Turso |
+| `PHONE_HASH_SECRET` | sí | No cambiarlo después de tener datos. |
+| `ADMIN_USER` | no | Por defecto `admin`. |
+| `PHONE_ENC_KEY` | no | Si la definís, el panel puede mostrar el teléfono (queda cifrado). |
+| `APP_TIMEZONE` | no | Por defecto `America/Argentina/Buenos_Aires`. |
+| `MAX_UPLOAD_KB` | no | Por defecto 700. |
+| `TICK_BUDGET_MS` | no | Presupuesto de cada tick (por defecto 8000 en Vercel). |
+| `INLINE_SEND_MAX` | no | Tope para envío en línea (por defecto 40). |
+| `SEND_BATCH_SIZE` / `SEND_CONCURRENCY` | no | Por defecto 40 y 8 en Vercel. |
+
+`VERCEL=1` y `TRUST_PROXY` los resuelve la propia plataforma (el proxy se activa solo). No hace falta `DB_PATH` ni `PORT`.
+
+### Paso a paso
+
+1. Creá la base en Turso (igual que en la sección de Render) y guardá URL y token.
+2. En tu máquina: `npm run vapid -- --print` y guardá las claves en un gestor de contraseñas (no las pegues en tickets ni chats).
+3. Subí este repo a GitHub (por ejemplo `https://github.com/giama-webpush/webpush-giama`). El `.gitignore` ya excluye `.env`, `node_modules` y bases.
+4. En [vercel.com](https://vercel.com) → *Add New → Project* → importá el repo. Framework preset: **Other** (ya está `framework: null` en `vercel.json`).
+5. Cargá las variables de la tabla. Deploy.
+6. Cuando tengas la URL, poné `BASE_URL=https://<tu-proyecto>.vercel.app` (o tu dominio) y redesplegá si hace falta.
+7. Verificá `https://<tu-dominio>/health` y el panel en `/admin`.
+8. **Ping externo cada 5 minutos** a `/api/cron/tick` (el cron propio de Vercel en Hobby es una vez por día, no alcanza). Dos opciones gratis:
+
+   **cron-job.org** (u otro ping): `POST` (o `GET`) `https://<tu-dominio>/api/cron/tick` cada 5 min, header `Authorization: Bearer <ADMIN_KEY>`. Si el servicio no permite headers: `...?key=<ADMIN_KEY>` (la clave queda en sus logs; preferí el header).
+
+   **GitHub Actions** en este mismo repo: ya está el workflow [`.github/workflows/webpush-tick.yml`](.github/workflows/webpush-tick.yml). En el repo (`Settings → Secrets and variables → Actions`) creá:
+   - `WEBPUSH_TICK_URL` = `https://<tu-dominio>/api/cron/tick`
+   - `ADMIN_KEY` = la misma clave que en Vercel  
+   En un repo público el `schedule` de GitHub a veces se atrasá un poco (no es exacto al minuto). También se puede disparar a mano (*Actions → webpush-tick → Run workflow*).
+
+**Importante:** no cambies las claves VAPID una vez que haya suscriptores.
+
+Para probar el handler en local alcanza `npm start` (o los tests que importan `api/index.js`). `vercel dev` exige iniciar sesión en Vercel; si lo usás, `VERCEL_ENV=development` permite SQLite local. Local, Docker y Render siguen igual: `npm start` o la imagen, con programador en memoria mientras el proceso esté despierto. El ping no molesta si también lo usás ahí.
+
+## 6. Docker / VPS
 
 ```bash
 docker build -t webpush-giama .
@@ -136,7 +196,7 @@ Sin Docker: `npm ci --omit=dev && npm start` con un gestor tipo systemd o pm2. E
 
 ---
 
-## 6. Cómo se usa
+## 7. Cómo se usa
 
 ### Links de suscripción
 En *Links de suscripción* armás URLs como:
@@ -168,7 +228,7 @@ iOS solo recibe push desde la web **instalada en pantalla de inicio** (iOS/iPadO
 
 ---
 
-## 7. Marca y piezas
+## 8. Marca y piezas
 
 Los archivos de marca están en `public/brand/` (íconos simples generados a partir del logo, fáciles de reemplazar):
 
@@ -186,7 +246,7 @@ Para usar los definitivos sin tocar el código: dejalos con esos nombres en una 
 
 ---
 
-## 8. Privacidad y seguridad
+## 9. Privacidad y seguridad
 
 - Solo opt-in: el navegador pide permiso únicamente cuando la persona toca **Activar avisos**. Texto de consentimiento y `/privacidad` editables. **La política de privacidad es un borrador: revisarla legalmente** (Ley 25.326, AAIP) antes de publicar.
 - Baja en un toque desde la landing o `/baja`, y desde el navegador. Las bajas no reciben más avisos.
@@ -196,7 +256,7 @@ Para usar los definitivos sin tocar el código: dejalos con esos nombres en una 
 
 ---
 
-## 9. API
+## 10. API
 
 Autenticación: `Authorization: Bearer <ADMIN_KEY>` o `X-API-Key: <ADMIN_KEY>`. Detalle en [`docs/api.md`](docs/api.md).
 
@@ -214,7 +274,7 @@ curl -X POST https://avisos.tudominio.com.ar/api/campaigns/send \
 
 ---
 
-## 10. Estructura
+## 11. Estructura
 
 ```
 src/            servidor (Express 5): config, db (adaptador), rutas, envío push, segmentos, teléfonos
@@ -224,9 +284,11 @@ test/           tests (node:test) con push simulado
 docs/           modelo de datos, API, capturas
 ```
 
-## 11. Limitaciones conocidas
+## 12. Limitaciones conocidas
 
 - Probado de punta a punta con Chrome de escritorio (FCM). No probado aún en iPhone real, Safari macOS, Firefox ni Android físico.
-- Turso remoto y Render no se probaron desde acá (sí el mismo driver libSQL en modo archivo).
-- Una sola instancia. Para decenas de miles de suscriptores por campaña conviene un VPS con archivo local o subir `SEND_CONCURRENCY`.
+- Turso remoto, Render y Vercel no se probaron con un deploy real desde acá (sí el mismo driver libSQL en modo archivo, el handler serverless y el tick por tandas).
+- En Vercel Hobby cada función dura como máximo 10 s: un envío grande se completa en varios pings (cada 5 min). El cron de GitHub Actions en un repo público puede atrasarse unos minutos.
+- El rate limit es por instancia en memoria: en serverless no se comparte entre invocaciones (es una red de contención, no un cupo global).
+- Una sola instancia en local/Docker/Render. Para decenas de miles de suscriptores por campaña conviene un VPS con archivo local o subir `SEND_CONCURRENCY`.
 - Las métricas de "entregado" dependen de que el service worker reporte; algunos navegadores lo limitan, así que es un mínimo.

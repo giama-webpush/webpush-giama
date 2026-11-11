@@ -32,7 +32,9 @@ function getConfig(overrides = {}) {
     root: ROOT,
     port: Number(env.PORT || 3000),
     host: env.HOST || '0.0.0.0',
-    baseUrl: (env.BASE_URL || `http://localhost:${env.PORT || 3000}`).replace(/\/+$/, ''),
+    // En Vercel, VERCEL=1 y (si no hay BASE_URL) se usa https://$VERCEL_URL como respaldo
+    serverless: bool(env.VERCEL, false) || bool(env.SERVERLESS, false),
+    baseUrl: (env.BASE_URL || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : `http://localhost:${env.PORT || 3000}`)).replace(/\/+$/, ''),
     production,
     dataDir,
     dbFile: overrides.dbFile || (env.DB_PATH ? path.resolve(ROOT, env.DB_PATH) : path.join(dataDir, 'webpush.db')),
@@ -49,11 +51,14 @@ function getConfig(overrides = {}) {
     phoneHashSecret: env.PHONE_HASH_SECRET || '',
     phoneEncKey: env.PHONE_ENC_KEY || '',
     cookieSecure: bool(env.COOKIE_SECURE, production),
-    trustProxy: bool(env.TRUST_PROXY, false),
+    trustProxy: bool(env.TRUST_PROXY, bool(env.VERCEL, false)),
     timezone: env.APP_TIMEZONE || 'America/Argentina/Buenos_Aires',
     schedulerIntervalMs: Number(env.SCHEDULER_INTERVAL_MS || 15000),
-    sendConcurrency: Number(env.SEND_CONCURRENCY || 10),
-    sendBatchSize: Number(env.SEND_BATCH_SIZE || 200),
+    // En Vercel (Hobby, tope 10 s) lotes más chicos y un presupuesto de tiempo holgado
+    sendConcurrency: Number(env.SEND_CONCURRENCY || (bool(env.VERCEL, false) ? 8 : 10)),
+    sendBatchSize: Number(env.SEND_BATCH_SIZE || (bool(env.VERCEL, false) ? 40 : 200)),
+    tickBudgetMs: env.TICK_BUDGET_MS != null && env.TICK_BUDGET_MS !== '' ? Number(env.TICK_BUDGET_MS) : (bool(env.VERCEL, false) ? 8000 : 0),
+    inlineSendMax: Number(env.INLINE_SEND_MAX || 40),
     maxUploadBytes: Math.round(Number(env.MAX_UPLOAD_KB || 700) * 1024),   // imágenes guardadas en la base
     sessionHours: Number(env.SESSION_HOURS || 12),
     ...overrides,
@@ -61,4 +66,17 @@ function getConfig(overrides = {}) {
   return cfg;
 }
 
-module.exports = { loadDotEnv, getConfig, ROOT };
+function vercelRequiresTurso(cfg = {}) {
+  // En el hosting de Vercel el disco es efímero. `vercel dev` (VERCEL_ENV=development) corre en tu máquina y puede usar SQLite local.
+  if (!bool(process.env.VERCEL, false)) return false;
+  if (process.env.VERCEL_ENV === 'development') return false;
+  return !(cfg.tursoUrl && cfg.tursoToken);
+}
+
+function assertStorage(cfg) {
+  if (vercelRequiresTurso(cfg)) {
+    throw new Error('En Vercel el filesystem es efímero: definí TURSO_DATABASE_URL y TURSO_AUTH_TOKEN. Sin Turso la base se pierde en cada despliegue.');
+  }
+}
+
+module.exports = { loadDotEnv, getConfig, assertStorage, vercelRequiresTurso, ROOT };

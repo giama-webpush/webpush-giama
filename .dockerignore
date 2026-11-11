@@ -10,3 +10,4 @@ data/
 .git
 test/
 docs/capturas/
+.vercel

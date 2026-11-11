@@ -1,0 +1,27 @@
+# Ping a /api/cron/tick cada 5 minutos (campañas programadas y tandas pendientes).
+# En el repo configurá estos secrets:
+#   WEBPUSH_TICK_URL  →  https://<tu-dominio>/api/cron/tick
+#   ADMIN_KEY         →  la misma API key que en Vercel
+name: webpush-tick
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Procesar campañas pendientes
+        env:
+          TICK_URL: ${{ secrets.WEBPUSH_TICK_URL }}
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+        run: |
+          if [ -z "$TICK_URL" ] || [ -z "$ADMIN_KEY" ]; then
+            echo "Faltan los secrets WEBPUSH_TICK_URL y/o ADMIN_KEY."
+            exit 1
+          fi
+          curl -fsS --retry 2 --retry-delay 3 -X POST \
+            -H "Authorization: Bearer ${ADMIN_KEY}" \
+            -H "Accept: application/json" \
+            "$TICK_URL"

@@ -4,6 +4,7 @@ const path = require('node:path');
 const express = require('express');
 const webpush = require('web-push');
 const { openDb, getSetting, setSetting, nowIso } = require('./db');
+const { assertStorage } = require('./config');
 const { loadOrCreateSecrets } = require('./secrets');
 const { ensureFirstAdmin } = require('./auth');
 const { createSender } = require('./push');
@@ -43,6 +44,7 @@ function securityHeaders(req, res, next) {
 }
 
 async function createApp({ cfg, db, sendNotification, logger = console } = {}) {
+  assertStorage(cfg);
   db = db || await openDb({ tursoUrl: cfg.tursoUrl, tursoToken: cfg.tursoToken, file: cfg.dbFile, driver: cfg.dbDriver });
   const secrets = await loadOrCreateSecrets(db, cfg, logger);
   cfg.phoneHashSecret = secrets.phoneHashSecret;
@@ -74,8 +76,16 @@ async function createApp({ cfg, db, sendNotification, logger = console } = {}) {
   // Assets de marca: primero BRAND_DIR (reemplazos del Diseñador), si no, public/brand
   if (cfg.brandDir && fs.existsSync(cfg.brandDir)) app.use('/brand', express.static(cfg.brandDir, { maxAge: '1h' }));
   app.use('/brand', express.static(path.join(cfg.root, 'public/brand'), { maxAge: '1h' }));
-  // Al despertar (Render free se duerme sin tráfico), cualquier visita dispara el procesamiento de lo atrasado
-  app.use((req, res, next) => { sender.nudge(60e3); next(); });
+  // Al despertar, o en serverless (sin timers), una visita puede retomar campañas atrasadas.
+  // El trabajo se persiste por tanda en la DB; /api/cron/tick es el camino confiable.
+  app.use((req, res, next) => {
+    if (req.path === '/api/cron/tick' || req.path === '/health' || req.path === '/healthz') return next();
+    const p = sender.nudge(60e3);
+    if (p && cfg.serverless) {
+      try { const { waitUntil } = require('@vercel/functions'); if (typeof waitUntil === 'function') waitUntil(p); } catch { /* paquete opcional */ }
+    }
+    next();
+  });
 
   app.use(publicRoutes(ctx));
   app.use('/admin/api', adminRoutes(ctx));

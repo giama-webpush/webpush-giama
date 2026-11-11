@@ -26,10 +26,11 @@ function verifyPassword(pw, stored) {
 // Rate limit en memoria por clave (ventana fija). Suficiente para un único servidor.
 function rateLimiter({ windowMs, max, keyFn }) {
   const hits = new Map();
-  setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, windowMs).unref();
+  // Limpieza perezosa (sin setInterval) para que también sirva en serverless
   return (req, res, next) => {
-    const key = (keyFn ? keyFn(req) : req.ip) || 'x';
     const now = Date.now();
+    if (hits.size > 50) { for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }
+    const key = (keyFn ? keyFn(req) : req.ip) || 'x';
     let e = hits.get(key);
     if (!e || e.reset < now) { e = { n: 0, reset: now + windowMs }; hits.set(key, e); }
     e.n += 1;

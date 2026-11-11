@@ -105,7 +105,7 @@ module.exports = function apiRoutes(ctx) {
       clean(b.name, 100) || `API ${nowIso().slice(0, 16)}`, pieceId, b.segment_id ? Number(b.segment_id) : null, JSON.stringify(filters), scheduledAt, ttl, urgency, Math.max(0, Number(b.freq_cap_hours) || 0));
     const id = x.lastInsertRowid;
     audit(db, 'api', 'api_campana', { id, count });
-    if (!scheduledAt) setImmediate(() => sender.processCampaign(id));
+    if (!scheduledAt) await sender.launch(id);
     res.status(202).json({ ok: true, campaign_id: id, estimated: count, scheduled_at: scheduledAt });
   });
 

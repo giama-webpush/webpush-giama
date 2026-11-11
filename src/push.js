@@ -2,7 +2,7 @@
 // Motor de envío: arma el payload por suscriptor, envía en lotes con reintentos,
 // desactiva suscripciones muertas (404/410) y registra cada envío.
 const { nowIso, getSetting } = require('./db');
-const { buildWhere } = require('./segments');
+const { buildWhere, countSegment } = require('./segments');
 const { randomToken } = require('./util');
 
 const MAX_ATTEMPTS = 3;
@@ -156,31 +156,50 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
     });
   }
 
-  async function processCampaign(id) {
-    if (running.has(id)) return;
+  // Reserva un lote de envíos (next_attempt_at = lease) para que otra invocación no los tome
+  async function claimBatch(id) {
+    const lease = new Date(Date.now() + 45e3).toISOString();
+    return db.tx(async (t) => {
+      const batch = await t.all(`SELECT x.id, x.token, x.is_test, x.attempts, x.subscriber_id,
+            s.id AS sid, s.endpoint, s.p256dh, s.auth, s.status AS sub_status, s.marca, s.modelo, s.asesor, s.phone_zone, s.phone_region
+          FROM sends x LEFT JOIN subscribers s ON s.id = x.subscriber_id
+          WHERE x.campaign_id = ? AND x.status = 'queued' AND (x.next_attempt_at IS NULL OR x.next_attempt_at <= ?)
+          ORDER BY x.id LIMIT ?`, id, nowIso(), cfg.sendBatchSize);
+      if (batch.length) {
+        const ids = batch.map((r) => r.id);
+        await t.run(`UPDATE sends SET next_attempt_at = ? WHERE id IN (${ids.map(() => '?').join(',')}) AND status = 'queued'`, lease, ...ids);
+      }
+      return batch;
+    });
+  }
+
+  // opts: { budgetMs, deadline, maxBatches } — si se acaba el tiempo, deja el resto encolado en la DB
+  async function processCampaign(id, opts = {}) {
+    if (running.has(id)) return { pending: true, skipped: true };
     running.add(id);
+    const deadline = opts.deadline ?? (opts.budgetMs ? Date.now() + opts.budgetMs : null);
+    const maxBatches = opts.maxBatches == null ? Infinity : opts.maxBatches;
     try {
       let campaign = await db.get('SELECT * FROM campaigns WHERE id = ?', id);
-      if (!campaign) return;
+      if (!campaign) return { pending: false };
       if (campaign.kind === 'manual' || campaign.kind === 'api') {
-        if (!['programada', 'enviando'].includes(campaign.status)) return;
-        if (campaign.status === 'programada' && campaign.scheduled_at && Date.parse(campaign.scheduled_at) > Date.now()) return;
+        if (!['programada', 'enviando'].includes(campaign.status)) return { pending: false };
+        if (campaign.status === 'programada' && campaign.scheduled_at && Date.parse(campaign.scheduled_at) > Date.now()) return { pending: true };
         campaign = await materialize(campaign);
       }
       const piece = await db.get('SELECT * FROM pieces WHERE id = ?', campaign.piece_id);
-      if (!piece) { logger.error(`[push] campaña ${id} sin pieza`); return; }
+      if (!piece) { logger.error(`[push] campaña ${id} sin pieza`); return { pending: true }; }
       const assets = await brandAssets();
+      let batches = 0;
       for (;;) {
+        if (deadline && Date.now() >= deadline) break;
+        if (batches >= maxBatches) break;
         const st = (await db.get('SELECT status FROM campaigns WHERE id = ?', id)).status;
         if (st === 'cancelada') {
           await db.run("UPDATE sends SET status = 'cancelled', error = 'campaña cancelada' WHERE campaign_id = ? AND status = 'queued'", id);
-          return;
+          return { pending: false };
         }
-        // Lote con los datos del suscriptor en la misma consulta
-        const batch = await db.all(`SELECT x.id, x.token, x.is_test, x.attempts, x.subscriber_id,
-            s.id AS sid, s.endpoint, s.p256dh, s.auth, s.status AS sub_status, s.marca, s.modelo, s.asesor, s.phone_zone, s.phone_region
-          FROM sends x LEFT JOIN subscribers s ON s.id = x.subscriber_id
-          WHERE x.campaign_id = ? AND x.status = 'queued' AND (x.next_attempt_at IS NULL OR x.next_attempt_at <= ?) ORDER BY x.id LIMIT ?`, id, nowIso(), cfg.sendBatchSize);
+        const batch = await claimBatch(id);
         if (!batch.length) break;
         let i = 0; const stmts = [];
         const workers = Array.from({ length: Math.min(cfg.sendConcurrency, batch.length) }, async () => {
@@ -193,16 +212,37 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
         });
         await Promise.all(workers);
         await db.batch(stmts);
+        batches += 1;
       }
       const pending = (await db.get("SELECT COUNT(*) AS n FROM sends WHERE campaign_id = ? AND status = 'queued'", id)).n;
       if (!pending && (campaign.kind === 'manual' || campaign.kind === 'api')) {
         await db.run("UPDATE campaigns SET status = 'finalizada', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'enviando'", nowIso(), nowIso(), id);
       }
+      return { pending: pending > 0, batches };
     } catch (e) {
       logger.error(`[push] error procesando campaña ${id}: ${e.message}`);
+      return { pending: true, error: e.message };
     } finally {
       running.delete(id);
     }
+  }
+
+  // Envío inmediato: campañas chicas en línea; las grandes quedan encoladas (las toma /api/cron/tick o una visita)
+  async function launch(id) {
+    const c = await db.get('SELECT * FROM campaigns WHERE id = ?', id);
+    if (!c || c.status !== 'programada') return { skipped: true };
+    if (c.scheduled_at && Date.parse(c.scheduled_at) > Date.now()) return { scheduled: true };
+    if (!cfg.serverless) {
+      setImmediate(() => processCampaign(id).catch((e) => logger.error('[push]', e.message)));
+      return { queued: true };
+    }
+    let count = 0;
+    try { count = await countSegment(db, parseJson(c.filters, {})); } catch { count = cfg.inlineSendMax + 1; }
+    if (count <= cfg.inlineSendMax) {
+      await processCampaign(id, { budgetMs: cfg.tickBudgetMs || 8000 });
+      return { inline: true, count };
+    }
+    return { queued: true, count };
   }
 
   async function sendTest({ campaignId, pieceId, subscriberId }) {
@@ -252,37 +292,52 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
     return n;
   }
 
-  // Procesa todo lo atrasado: programadas vencidas, envíos en curso/reintentos y automatizaciones
+  // Procesa lo atrasado por tandas. opts: { budgetMs, maxBatches }
+  // Si se acaba el presupuesto, el estado queda en la DB y se retoma en el próximo tick.
   let ticking = null; let lastTick = 0;
-  async function tick() {
+  async function tick(opts = {}) {
     if (ticking) return ticking;
     ticking = (async () => {
       lastTick = Date.now();
+      const budgetMs = opts.budgetMs != null ? opts.budgetMs : cfg.tickBudgetMs;
+      const deadline = budgetMs ? Date.now() + budgetMs : null;
       const recontacts = await enqueueRecontacts();
       const due = await db.all(`SELECT id FROM campaigns WHERE
           (status = 'programada' AND (scheduled_at IS NULL OR scheduled_at <= ?))
           OR status = 'enviando'
           OR (status = 'automatica' AND EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = campaigns.id AND s.status = 'queued'))`, nowIso());
-      for (const c of due) await processCampaign(c.id);
-      return { processed: due.map((c) => c.id), recontactsQueued: recontacts };
+      const processed = [];
+      const remaining = [];
+      for (let i = 0; i < due.length; i++) {
+        if (deadline && Date.now() >= deadline) { remaining.push(...due.slice(i).map((c) => c.id)); break; }
+        const out = await processCampaign(due[i].id, { deadline, maxBatches: opts.maxBatches });
+        processed.push(due[i].id);
+        if (out && out.pending) remaining.push(due[i].id);
+      }
+      return { processed, remaining, more: remaining.length > 0, recontactsQueued: recontacts };
     })();
     try { return await ticking; } finally { ticking = null; }
   }
 
-  // Dispara un tick en segundo plano si pasó más de `minMs` desde el último (al despertar el servidor)
-  function nudge(minMs = 60e3) {
-    if (!ticking && Date.now() - lastTick > minMs) tick().catch((e) => logger.error('[scheduler]', e.message));
+  // En un servidor persistente dispara un tick en segundo plano. En serverless
+  // devuelve una promesa (para waitUntil o para esperar un presupuesto corto).
+  function nudge(minMs = 60e3, opts = {}) {
+    if (ticking || Date.now() - lastTick <= minMs) return null;
+    const budgetMs = opts.budgetMs != null ? opts.budgetMs : (cfg.serverless ? Math.min(cfg.tickBudgetMs || 8000, 2000) : cfg.tickBudgetMs);
+    const p = tick({ budgetMs }).catch((e) => logger.error('[scheduler]', e.message));
+    return p;
   }
 
   let timer = null;
   function start() {
+    if (cfg.serverless) return; // Vercel/serverless: sin timers; el trabajo lo hace /api/cron/tick y las visitas
     if (timer) return;
     const loop = async () => { try { await tick(); } catch (e) { logger.error('[scheduler]', e.message); } timer = setTimeout(loop, cfg.schedulerIntervalMs); timer.unref?.(); };
     timer = setTimeout(loop, 500); timer.unref?.();
   }
   function stop() { if (timer) clearTimeout(timer); timer = null; }
 
-  return { processCampaign, sendTest, sendAutomation, tick, nudge, start, stop, enqueueRecontacts };
+  return { processCampaign, launch, sendTest, sendAutomation, tick, nudge, start, stop, enqueueRecontacts };
 }
 
 module.exports = { createSender, renderVars, buildPayload, targetUrl, addUtm, parseJson, absUrl };
