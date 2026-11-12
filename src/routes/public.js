@@ -31,10 +31,11 @@ module.exports = function publicRoutes(ctx) {
     const name = await getSetting(db, 'site_name', 'Avisos');
     res.type('application/manifest+json').json({
       name: `${name} - Avisos`, short_name: name, start_url: '/s?pwa=1', scope: '/', display: 'standalone',
-      background_color: '#FFFFFF', theme_color: '#0074E8', lang: 'es-AR',
+      background_color: '#000000', theme_color: '#000000', lang: 'es-AR',
       icons: [
-        { src: '/brand/icon-192.png', sizes: '192x192', type: 'image/png' },
-        { src: '/brand/icon-512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: '/brand/icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
         { src: '/brand/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
       ],
     });
@@ -106,6 +107,19 @@ module.exports = function publicRoutes(ctx) {
     if (!piece) return res.redirect(302, await getSetting(db, 'default_url', '/s'));
     res.set('Cache-Control', 'no-store');
     res.redirect(302, targetUrl({ piece, campaign, sub, action, baseUrl: cfg.baseUrl }));
+  });
+
+  // QR PNG dinámico para el presupuesto (y tests). Solo a la landing de este sitio.
+  r.get(['/qr.png', '/qr.png/'], async (req, res, next) => {
+    try {
+      const { landingFromQuery, qrSize, qrPngBuffer } = require('../qr');
+      const target = landingFromQuery(cfg, req.query || {});
+      const size = qrSize(req.query || {});
+      const buf = await qrPngBuffer(target, size);
+      res.set('Cache-Control', 'public, max-age=300');
+      res.set('X-QR-Target', target);
+      res.type('image/png').send(buf);
+    } catch (e) { next(e); }
   });
 
   // Imágenes subidas (guardadas en la base)

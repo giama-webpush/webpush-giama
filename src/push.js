@@ -1,7 +1,8 @@
 'use strict';
 // Motor de envío: arma el payload por suscriptor, envía en lotes con reintentos,
 // desactiva suscripciones muertas (404/410) y registra cada envío.
-const { nowIso, getSetting } = require('./db');
+const { nowIso, getSetting, getSettings } = require('./db');
+const { normalizePolicy, isInSendWindow, freqCapSql } = require('./send-policy');
 const { buildWhere, countSegment } = require('./segments');
 const { randomToken } = require('./util');
 
@@ -135,23 +136,25 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
     }
   }
 
+  async function loadSendPolicy() {
+    const st = await getSettings(db, ['freq_cap_per_day', 'freq_cap_per_week', 'send_window_start', 'send_window_end']);
+    return normalizePolicy(st, cfg.timezone);
+  }
+
   // Arma la lista de destinatarios de una campaña una sola vez, con un único INSERT ... SELECT
-  async function materialize(campaign) {
+  async function materialize(campaign, policy, now = new Date()) {
     return db.tx(async (t) => {
       const fresh = await t.get('SELECT * FROM campaigns WHERE id = ?', campaign.id);
       if (fresh.started_at) return fresh;
       const w = buildWhere(parseJson(fresh.filters, {}));
-      const and = w.sql ? `${w.sql} AND` : 'WHERE';
-      let skipped = 0;
-      let capSql = ''; const capArgs = [];
-      if (fresh.freq_cap_hours > 0) {
-        const limit = new Date(Date.now() - fresh.freq_cap_hours * 3600e3).toISOString();
-        skipped = (await t.get(`SELECT COUNT(*) AS n FROM subscribers s ${and} s.last_push_at >= ?`, ...w.params, limit)).n;
-        capSql = `${and} (s.last_push_at IS NULL OR s.last_push_at < ?)`; capArgs.push(limit);
-      }
-      const ins = await t.run(`INSERT OR IGNORE INTO sends(token, campaign_id, subscriber_id) SELECT lower(hex(randomblob(16))), ?, s.id FROM subscribers s ${capSql || w.sql}`, fresh.id, ...w.params, ...capArgs);
-      const now = nowIso();
-      await t.run("UPDATE campaigns SET status = 'enviando', started_at = ?, total_targeted = ?, skipped_freq = ?, updated_at = ? WHERE id = ?", now, ins.changes, skipped, now, fresh.id);
+      const cap = freqCapSql(policy, now, { campaignHours: Number(fresh.freq_cap_hours) || 0 });
+      const where = [w.sql && w.sql.replace(/^WHERE\s+/i, ''), cap.sql].filter(Boolean).join(' AND ');
+      const whereSql = where ? `WHERE ${where}` : '';
+      const total = (await t.get(`SELECT COUNT(*) AS n FROM subscribers s ${w.sql}`, ...w.params)).n;
+      const ins = await t.run(`INSERT OR IGNORE INTO sends(token, campaign_id, subscriber_id) SELECT lower(hex(randomblob(16))), ?, s.id FROM subscribers s ${whereSql}`, fresh.id, ...w.params, ...cap.params);
+      const skipped = Math.max(0, total - (ins.changes || 0));
+      const ts = nowIso();
+      await t.run("UPDATE campaigns SET status = 'enviando', started_at = ?, total_targeted = ?, skipped_freq = ?, updated_at = ? WHERE id = ?", ts, ins.changes, skipped, ts, fresh.id);
       return t.get('SELECT * FROM campaigns WHERE id = ?', fresh.id);
     });
   }
@@ -180,12 +183,15 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
     const deadline = opts.deadline ?? (opts.budgetMs ? Date.now() + opts.budgetMs : null);
     const maxBatches = opts.maxBatches == null ? Infinity : opts.maxBatches;
     try {
+      const now = opts.now || new Date();
+      const policy = opts.policy || await loadSendPolicy();
+      if (!opts.ignoreWindow && !isInSendWindow(policy, now)) return { pending: true, waitingWindow: true };
       let campaign = await db.get('SELECT * FROM campaigns WHERE id = ?', id);
       if (!campaign) return { pending: false };
       if (campaign.kind === 'manual' || campaign.kind === 'api') {
         if (!['programada', 'enviando'].includes(campaign.status)) return { pending: false };
-        if (campaign.status === 'programada' && campaign.scheduled_at && Date.parse(campaign.scheduled_at) > Date.now()) return { pending: true };
-        campaign = await materialize(campaign);
+        if (campaign.status === 'programada' && campaign.scheduled_at && Date.parse(campaign.scheduled_at) > now.getTime()) return { pending: true };
+        campaign = await materialize(campaign, policy, now);
       }
       const piece = await db.get('SELECT * FROM pieces WHERE id = ?', campaign.piece_id);
       if (!piece) { logger.error(`[push] campaña ${id} sin pieza`); return { pending: true }; }
@@ -299,18 +305,23 @@ function createSender({ db, cfg, sendNotification, vapid, logger = console }) {
     if (ticking) return ticking;
     ticking = (async () => {
       lastTick = Date.now();
+      const now = opts.now || new Date();
       const budgetMs = opts.budgetMs != null ? opts.budgetMs : cfg.tickBudgetMs;
       const deadline = budgetMs ? Date.now() + budgetMs : null;
+      const policy = opts.policy || await loadSendPolicy();
       const recontacts = await enqueueRecontacts();
       const due = await db.all(`SELECT id FROM campaigns WHERE
           (status = 'programada' AND (scheduled_at IS NULL OR scheduled_at <= ?))
           OR status = 'enviando'
-          OR (status = 'automatica' AND EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = campaigns.id AND s.status = 'queued'))`, nowIso());
+          OR (status = 'automatica' AND EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = campaigns.id AND s.status = 'queued'))`, now.toISOString());
+      if (!opts.ignoreWindow && !isInSendWindow(policy, now)) {
+        return { processed: [], remaining: due.map((c) => c.id), more: due.length > 0, waitingWindow: true, recontactsQueued: recontacts };
+      }
       const processed = [];
       const remaining = [];
       for (let i = 0; i < due.length; i++) {
         if (deadline && Date.now() >= deadline) { remaining.push(...due.slice(i).map((c) => c.id)); break; }
-        const out = await processCampaign(due[i].id, { deadline, maxBatches: opts.maxBatches });
+        const out = await processCampaign(due[i].id, { deadline, maxBatches: opts.maxBatches, now, policy });
         processed.push(due[i].id);
         if (out && out.pending) remaining.push(due[i].id);
       }

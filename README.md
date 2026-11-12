@@ -302,7 +302,7 @@ Para usar los definitivos sin tocar el código: dejalos con esos nombres en una 
 
 ## 10. Privacidad y seguridad
 
-- Solo opt-in: el navegador pide permiso únicamente cuando la persona toca **Activar avisos**. Texto de consentimiento y `/privacidad` editables. **La política de privacidad es un borrador: revisarla legalmente** (Ley 25.326, AAIP) antes de publicar.
+- Solo opt-in: el navegador pide permiso únicamente cuando la persona toca **Quiero recibir las ofertas**. Texto de consentimiento y `/privacidad` editables. **La política de privacidad es un borrador: revisarla legalmente** (Ley 25.326, AAIP) antes de publicar.
 - Baja en un toque desde la landing o `/baja`, y desde el navegador. Las bajas no reciben más avisos.
 - El teléfono **no se guarda en claro** por defecto (solo huella HMAC + área). Con `PHONE_ENC_KEY` se guarda además cifrado.
 - Panel: contraseña con scrypt, cookie de sesión `HttpOnly` + `SameSite=Strict` (+ `Secure` en producción), token CSRF y chequeo de `Origin`, roles `admin`/`editor`, registro de auditoría.

@@ -345,8 +345,12 @@ module.exports = function adminRoutes(ctx) {
 
   // ---------- Campañas ----------
   async function campaignStats(id) {
-    return (await db.get(`SELECT COUNT(*) AS total, SUM(status='queued') AS queued, SUM(status='sent') AS sent, SUM(status='failed') AS failed, SUM(status='dead') AS dead, SUM(status='cancelled') AS cancelled,
-      SUM(delivered_at IS NOT NULL) AS delivered, SUM(clicked_at IS NOT NULL) AS clicked, SUM(closed_at IS NOT NULL) AS closed FROM sends WHERE campaign_id = ? AND is_test = 0`, id));
+    return (await db.get(`SELECT COUNT(*) AS total,
+      COALESCE(SUM(status='queued'), 0) AS queued, COALESCE(SUM(status='sent'), 0) AS sent,
+      COALESCE(SUM(status='failed'), 0) AS failed, COALESCE(SUM(status='dead'), 0) AS dead,
+      COALESCE(SUM(status='cancelled'), 0) AS cancelled, COALESCE(SUM(delivered_at IS NOT NULL), 0) AS delivered,
+      COALESCE(SUM(clicked_at IS NOT NULL), 0) AS clicked, COALESCE(SUM(closed_at IS NOT NULL), 0) AS closed
+      FROM sends WHERE campaign_id = ? AND is_test = 0`, id));
   }
 
   async function campaignFromBody(b, existing) {
@@ -482,7 +486,8 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // ---------- Configuración ----------
-  const EDITABLE = ['site_name', 'logo_url', 'icon_url', 'badge_url', 'optin_title', 'optin_text', 'optin_button', 'consent_text', 'success_text', 'default_url', 'privacy_contact'];
+  const EDITABLE = ['site_name', 'logo_url', 'icon_url', 'badge_url', 'optin_title', 'optin_text', 'optin_button', 'consent_text', 'success_text', 'default_url', 'privacy_contact', 'freq_cap_per_day', 'freq_cap_per_week', 'send_window_start', 'send_window_end'];
+  const SETTING_INTS = { freq_cap_per_day: [0, 50], freq_cap_per_week: [0, 100], send_window_start: [0, 24], send_window_end: [0, 24] };
   r.get('/settings', async (req, res) => {
     const out = {};
     Object.assign(out, await getSettings(db, EDITABLE));
@@ -491,8 +496,14 @@ module.exports = function adminRoutes(ctx) {
   r.put('/settings', onlyAdmin, async (req, res) => {
     const b = req.body || {};
     for (const k of EDITABLE) if (b[k] !== undefined) {
-      const v = String(b[k]).slice(0, 1000);
+      let v = String(b[k]).slice(0, 1000);
       if (/_url$/.test(k) && v && !isHttpUrl(v, { allowRelative: true })) throw bad(`URL inválida en ${k}`);
+      if (SETTING_INTS[k]) {
+        const n = Number(v);
+        const [min, max] = SETTING_INTS[k];
+        if (!Number.isFinite(n) || n < min || n > max) throw bad(`${k} tiene que ser un número entre ${min} y ${max}`);
+        v = String(Math.round(n));
+      }
       await setSetting(db, k, v);
     }
     audit(db, req.admin.username, 'config', { keys: Object.keys(b) });

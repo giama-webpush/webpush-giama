@@ -18,17 +18,40 @@ const DEFAULT_SETTINGS = {
   logo_url: '/brand/logo.png',
   icon_url: '/brand/icon-192.png',
   badge_url: '/brand/badge-96.png',
-  optin_title: 'Enterate primero',
-  optin_text: 'Activá los avisos y te contamos novedades, promociones y el estado de tu presupuesto. Sin mails ni llamadas: solo notificaciones en este dispositivo.',
-  optin_button: 'Activar avisos',
-  consent_text: 'Al activar los avisos aceptás recibir notificaciones de Peugeot Giama en este navegador. Podés darte de baja cuando quieras desde esta página o desde la configuración del navegador.',
-  success_text: 'Listo, ya tenés los avisos activados. Te vamos a avisar solo lo importante.',
+  optin_title: 'Enterate primero de las ofertas',
+  optin_text: 'Activá las notificaciones y te avisamos de ofertas, lanzamientos y novedades de tu modelo. Pocas notificaciones, solo lo importante. Sin mails ni llamadas.',
+  optin_button: 'Quiero recibir las ofertas',
+  consent_text: 'Solo notificaciones en este dispositivo. Podés darte de baja cuando quieras.',
+  success_text: 'Listo, ya estás suscripto. Solo te avisamos cuando hay algo que vale la pena.',
   default_url: 'https://www.peugeotgiama.com.ar/',
   privacy_contact: 'el canal de contacto de la concesionaria',
+  freq_cap_per_day: '1',
+  freq_cap_per_week: '2',
+  send_window_start: '9',
+  send_window_end: '21',
+};
+
+// Si en producción quedó el texto anterior (el default viejo), lo actualizamos al nuevo.
+const SETTINGS_REWRITES = {
+  optin_title: ['Enterate primero'],
+  optin_text: [
+    'Activá los avisos y te contamos novedades, promociones y el estado de tu presupuesto. Sin mails ni llamadas: solo notificaciones en este dispositivo.',
+    'Activá las notificaciones y te avisamos de ofertas, lanzamientos y novedades de tu modelo. Sin mails ni llamadas.',
+  ],
+  optin_button: ['Activar avisos'],
+  consent_text: ['Al activar los avisos aceptás recibir notificaciones de Peugeot Giama en este navegador. Podés darte de baja cuando quieras desde esta página o desde la configuración del navegador.'],
+  success_text: [
+    'Listo, ya tenés los avisos activados. Te vamos a avisar solo lo importante.',
+    'Listo, ya estás suscripto. Te vamos a avisar de ofertas y novedades.',
+  ],
 };
 
 async function seedDefaults(db) {
-  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) if ((await getSetting(db, k)) === null) await setSetting(db, k, v);
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
+    const cur = await getSetting(db, k);
+    if (cur === null) await setSetting(db, k, v);
+    else if (SETTINGS_REWRITES[k] && SETTINGS_REWRITES[k].includes(cur)) await setSetting(db, k, v);
+  }
   const has = (await db.get('SELECT COUNT(*) AS n FROM automations')).n;
   if (!has) {
     await db.run("INSERT INTO automations(type, name, enabled, days) VALUES('welcome', 'Bienvenida al suscribirse', 0, 0)");

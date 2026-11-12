@@ -1,7 +1,7 @@
 /* Landing de suscripción WebPush (sin dependencias). */
 (function () {
   'use strict';
-  var PARAMS = ['marca', 'modelo', 'tel', 'asesor', 'origen', 'campana', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'tags'];
+  var PARAMS = ['marca', 'modelo', 'tel', 'asesor', 'origen', 'campana', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'tags', 'cotiz', 'cotizacion'];
   var $ = function (id) { return document.getElementById(id); };
   var cfg = null;
 
@@ -43,9 +43,9 @@
     var modelo = meta.modelo ? titleCase(meta.modelo) : '';
     var marca = meta.marca ? titleCase(meta.marca) : '';
     $('eyebrow').textContent = modelo ? ('Tu ' + (marca ? marca + ' ' : '') + modelo) : (cfg.siteName || 'Peugeot Giama');
-    $('titulo').textContent = cfg.optinTitle || 'Enterate primero';
+    $('titulo').textContent = cfg.optinTitle || 'Enterate primero de las ofertas';
     $('texto').textContent = cfg.optinText || '';
-    $('btn-activar').textContent = cfg.optinButton || 'Activar avisos';
+    $('btn-activar').textContent = cfg.optinButton || 'Quiero recibir las ofertas';
     $('consent').textContent = cfg.consentText || '';
     document.title = 'Avisos ' + (cfg.siteName || '');
   }
@@ -53,7 +53,7 @@
   function mostrarOk() {
     $('bloque-optin').classList.add('oculto');
     $('bloque-ok').classList.remove('oculto');
-    estado('ok', esc(cfg.successText || 'Listo, ya tenés los avisos activados.'));
+    estado('ok', esc(cfg.successText || 'Listo, ya estás suscripto. Solo te avisamos cuando hay algo que vale la pena.'));
   }
 
   function mostrarOptin() {
@@ -62,7 +62,7 @@
   }
 
   function explicarBloqueo() {
-    estado('warn', 'Los avisos están bloqueados para este sitio. Para activarlos: tocá el candado o el ícono al lado de la dirección, entrá en <b>Permisos / Notificaciones</b> y elegí <b>Permitir</b>. Después volvé a esta página.');
+    estado('warn', 'Las notificaciones están bloqueadas para este sitio. Para activarlas: tocá el candado o el ícono al lado de la dirección, entrá en <b>Permisos / Notificaciones</b> y elegí <b>Permitir</b>. Después volvé y tocá el botón de nuevo.');
   }
 
   async function registrarSW() {
@@ -74,7 +74,7 @@
     btn.disabled = true;
     try {
       var permiso = await Notification.requestPermission();
-      if (permiso !== 'granted') { if (permiso === 'denied') explicarBloqueo(); else estado('warn', 'No se activaron los avisos. Podés intentarlo de nuevo cuando quieras.'); return; }
+      if (permiso !== 'granted') { if (permiso === 'denied') explicarBloqueo(); else estado('warn', 'Esta vez no se activaron las notificaciones. Cuando quieras, volvé a tocar el botón.'); return; }
       var reg = await registrarSW();
       await navigator.serviceWorker.ready;
       var sub = await reg.pushManager.getSubscription();
@@ -86,7 +86,7 @@
       try { localStorage.setItem('wp_manage', data.manageToken || ''); } catch (e) { /* sin storage */ }
       mostrarOk();
     } catch (err) {
-      estado('err', 'No pudimos activar los avisos en este navegador. ' + esc(err && err.message ? err.message : ''));
+      estado('err', 'No pudimos activar las notificaciones en este navegador. ' + esc(err && err.message ? err.message : ''));
     } finally { btn.disabled = false; }
   }
 
@@ -98,7 +98,7 @@
       await fetch('/api/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub ? { endpoint: sub.endpoint } : { token: token }) });
       if (sub) await sub.unsubscribe();
       mostrarOptin();
-      estado('ok', 'Listo, te diste de baja. No vas a recibir más avisos en este dispositivo.');
+      estado('ok', 'Listo, ya te diste de baja. No vas a recibir más avisos en este dispositivo.');
     } catch (e) { estado('err', 'No pudimos completar la baja. Probá de nuevo o desactivá las notificaciones desde la configuración del navegador.'); }
   }
 
@@ -112,10 +112,10 @@
     if (!soportado || (isIOS && !standalone)) {
       if (isIOS && !standalone) {
         $('btn-activar').classList.add('oculto');
-        estado('warn', 'En iPhone los avisos funcionan desde la app instalada (iOS 16.4 o superior):<ol class="pasos"><li>Tocá <b>Compartir</b> (el cuadrado con la flecha).</li><li>Elegí <b>Agregar a pantalla de inicio</b>.</li><li>Abrí <b>Peugeot Giama</b> desde el ícono y tocá <b>Activar avisos</b>.</li></ol>');
+        estado('warn', 'En iPhone las notificaciones funcionan desde la app instalada (iOS 16.4 o superior):<ol class="pasos"><li>Tocá <b>Compartir</b> (el cuadrado con la flecha).</li><li>Elegí <b>Agregar a pantalla de inicio</b>.</li><li>Abrí <b>Peugeot Giama</b> desde el ícono y tocá <b>Quiero recibir las ofertas</b>.</li></ol>');
       } else {
         $('btn-activar').disabled = true;
-        estado('warn', 'Este navegador no permite avisos. Probá con Chrome, Edge, Firefox o Samsung Internet.');
+        estado('warn', 'Este navegador no permite notificaciones. Probá con Chrome, Edge, Firefox o Samsung Internet.');
       }
       return;
     }

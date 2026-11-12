@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { getConfig } = require('../src/config');
 const { createApp } = require('../src/app');
+const { setSetting } = require('../src/db');
 
 // Driver de la base para los tests: libsql en modo archivo local (file:) por defecto.
 const DRIVER = process.env.TEST_DB_DRIVER || 'libsql';
@@ -21,6 +22,9 @@ async function startTestApp({ sendNotification, overrides = {} } = {}) {
   const calls = [];
   const sn = sendNotification || (async (sub, payload, opts) => { calls.push({ sub, payload: JSON.parse(payload), opts }); return { statusCode: 201 }; });
   const { app, db, sender } = await createApp({ cfg, sendNotification: async (...a) => sn(...a), logger: silent });
+  // Los tests no deben depender de la hora de Buenos Aires: franja abierta 0-24.
+  await setSetting(db, 'send_window_start', '0');
+  await setSetting(db, 'send_window_end', '24');
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   cfg.baseUrl = base;

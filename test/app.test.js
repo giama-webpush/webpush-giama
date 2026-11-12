@@ -18,7 +18,7 @@ test(`[${DRIVER}] suscripción idempotente con etiquetas automáticas`, async ()
   const t = await startTestApp();
   try {
     const sub = fakeSubscription('idem');
-    const meta = { marca: 'peugeot', modelo: '208', tel: '011 15 5555 1234', asesor: 'Laura', origen: 'Presupuesto', campana: 'Nov 2026', utm_source: 'pilot', lang: 'es-AR', tz: 'America/Argentina/Buenos_Aires' };
+    const meta = { marca: 'peugeot', modelo: '208', tel: '011 15 5555 1234', asesor: 'Laura', origen: 'Presupuesto', campana: 'Nov 2026', utm_source: 'pilot', cotiz: '0004-000000-00099', lang: 'es-AR', tz: 'America/Argentina/Buenos_Aires' };
     const a = await subscribe(t.base, meta, sub);
     assert.equal(a.res.status, 201);
     assert.ok(a.body.manageToken);
@@ -35,7 +35,7 @@ test(`[${DRIVER}] suscripción idempotente con etiquetas automáticas`, async ()
     assert.equal(s.device_type, 'mobile'); assert.equal(s.os, 'Android'); assert.equal(s.browser, 'Chrome');
     assert.equal(s.origen, 'presupuesto'); assert.equal(s.campana, 'nov-2026');
     const tags = (await t.db.all('SELECT tag FROM subscriber_tags WHERE subscriber_id = ?', s.id)).map((x) => x.tag);
-    for (const tg of ['marca:peugeot', 'modelo:208', 'zona:amba', 'prefijo:011', 'dispositivo:mobile', 'so:android', 'origen:presupuesto']) assert.ok(tags.includes(tg), tg);
+    for (const tg of ['marca:peugeot', 'modelo:208', 'zona:amba', 'prefijo:011', 'dispositivo:mobile', 'so:android', 'origen:presupuesto', 'asesor:laura', 'campana:nov-2026', 'utm_source:pilot', 'cotiz:0004-000000-00099']) assert.ok(tags.includes(tg), tg);
   } finally { await t.close(); }
 });
 
@@ -378,5 +378,127 @@ test(`[${DRIVER}] el CSRF de /login es el de la sesión final y sirve para el pr
     assert.equal((await fetch(`${t.base}/admin/api/me`, { headers: { Cookie: a.cookie } })).status, 401);
     const fresh = await b.call('POST', '/segments', { name: 'con-csrf-nuevo', filters: {} });
     assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+  } finally { await t.close(); }
+});
+
+test(`[${DRIVER}] /s guarda cotiz como etiqueta y /qr.png genera un PNG de la landing`, async () => {
+  const t = await startTestApp();
+  try {
+    const sub = fakeSubscription('cotiz-qr');
+    const a = await subscribe(t.base, { marca: 'peugeot', modelo: '208', asesor: 'demo', cotizacion: '0004-000111-00001', utm_source: 'presupuesto', utm_medium: 'pilot' }, sub);
+    assert.equal(a.res.status, 201);
+    const id = (await t.db.get('SELECT id FROM subscribers WHERE endpoint = ?', sub.endpoint)).id;
+    const tags = (await t.db.all('SELECT tag FROM subscriber_tags WHERE subscriber_id = ?', id)).map((x) => x.tag);
+    assert.ok(tags.includes('cotiz:0004-000111-00001'), tags.join(','));
+    assert.ok(tags.includes('asesor:demo'), tags.join(','));
+    assert.ok(tags.includes('marca:peugeot'));
+    assert.ok(tags.includes('modelo:208'));
+
+    const png = await fetch(`${t.base}/qr.png?marca=peugeot&modelo=208&asesor=demo&utm_source=presupuesto&utm_medium=pilot&cotiz=0004-000111-00001`);
+    const buf = Buffer.from(await png.arrayBuffer());
+    assert.equal(png.status, 200, buf.slice(0, 200).toString());
+    assert.match(png.headers.get('content-type') || '', /image\/png/);
+    assert.ok(buf.length > 80);
+    assert.deepEqual(buf.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const target = png.headers.get('x-qr-target') || '';
+    assert.match(target, /\/s\?/);
+    assert.match(target, /modelo=208/);
+    assert.match(target, /cotiz=0004-000111-00001/);
+
+    const viaU = await fetch(`${t.base}/qr.png?u=${encodeURIComponent(t.base + '/s?modelo=208')}`);
+    assert.equal(viaU.status, 200);
+    const forbidden = await fetch(`${t.base}/qr.png?u=${encodeURIComponent('https://example.com/s')}`);
+    assert.equal(forbidden.status, 400);
+    const missing = await fetch(`${t.base}/qr.png`);
+    assert.equal(missing.status, 400);
+    const adminQr = await fetch(`${t.base}/qr.png?u=${encodeURIComponent(t.base + '/admin')}`);
+    assert.equal(adminQr.status, 400);
+  } finally { await t.close(); }
+});
+
+const { setSetting } = require('../src/db');
+
+test(`[${DRIVER}] tope global de avisos (1 por día, 2 por semana) omite y cuenta en métricas`, async () => {
+  const t = await startTestApp();
+  try {
+    await setSetting(t.db, 'freq_cap_per_day', '1');
+    await setSetting(t.db, 'freq_cap_per_week', '2');
+    for (let i = 0; i < 3; i++) await subscribe(t.base, { modelo: '208' }, fakeSubscription(`tope-${i}`));
+    const s = await adminLogin(t.base);
+    const pid = await crearPieza(s);
+
+    const c1 = (await s.call('POST', '/campaigns', { name: 'Tope 1', piece_id: pid, mode: 'now' })).body.id;
+    await t.sender.processCampaign(c1);
+    const r1 = (await s.call('GET', `/campaigns/${c1}`)).body;
+    assert.equal(r1.status, 'finalizada');
+    assert.equal(r1.total_targeted, 3);
+    assert.equal(r1.skipped_freq, 0);
+    assert.equal(r1.stats.sent, 3);
+
+    const c2 = (await s.call('POST', '/campaigns', { name: 'Tope 2', piece_id: pid, mode: 'now' })).body.id;
+    await t.sender.processCampaign(c2);
+    const r2 = (await s.call('GET', `/campaigns/${c2}`)).body;
+    assert.equal(r2.total_targeted, 0);
+    assert.equal(r2.skipped_freq, 3);
+    assert.equal(r2.stats.sent, 0);
+
+    await setSetting(t.db, 'freq_cap_per_day', '0');
+    await setSetting(t.db, 'freq_cap_per_week', '2');
+    const c3 = (await s.call('POST', '/campaigns', { name: 'Tope 3', piece_id: pid, mode: 'now' })).body.id;
+    await t.sender.processCampaign(c3);
+    const r3 = (await s.call('GET', `/campaigns/${c3}`)).body;
+    assert.equal(r3.total_targeted, 3);
+    assert.equal(r3.skipped_freq, 0);
+    assert.equal(r3.stats.sent, 3);
+
+    const c4 = (await s.call('POST', '/campaigns', { name: 'Tope 4', piece_id: pid, mode: 'now' })).body.id;
+    await t.sender.processCampaign(c4);
+    const r4 = (await s.call('GET', `/campaigns/${c4}`)).body;
+    assert.equal(r4.total_targeted, 0);
+    assert.equal(r4.skipped_freq, 3);
+
+    const st = await s.call('GET', '/settings');
+    assert.equal(st.status, 200);
+    assert.equal(st.body.settings.freq_cap_per_week, '2');
+    const bad = await s.call('PUT', '/settings', { freq_cap_per_day: '-1' });
+    assert.equal(bad.status, 400);
+    const ok = await s.call('PUT', '/settings', { freq_cap_per_day: '1', send_window_start: '9', send_window_end: '21' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  } finally { await t.close(); }
+});
+
+test(`[${DRIVER}] fuera de la franja 9-21 las campañas esperan a la próxima ventana`, async () => {
+  const t = await startTestApp();
+  try {
+    await setSetting(t.db, 'send_window_start', '9');
+    await setSetting(t.db, 'send_window_end', '21');
+    await setSetting(t.db, 'freq_cap_per_day', '0');
+    await setSetting(t.db, 'freq_cap_per_week', '0');
+    await subscribe(t.base, { modelo: '208' }, fakeSubscription('ventana'));
+    const s = await adminLogin(t.base);
+    const pid = await crearPieza(s);
+    const id = (await s.call('POST', '/campaigns', { name: 'Fuera de hora', piece_id: pid })).body.id;
+    await t.db.run("UPDATE campaigns SET status = 'programada' WHERE id = ?", id);
+
+    const noche = new Date('2026-11-12T22:30:00-03:00');
+    const outNoche = await t.sender.processCampaign(id, { now: noche });
+    assert.equal(outNoche.waitingWindow, true);
+    const stNoche = (await s.call('GET', `/campaigns/${id}`)).body;
+    assert.equal(stNoche.status, 'programada');
+    assert.equal(stNoche.total_targeted, 0);
+    assert.equal(stNoche.started_at, null);
+
+    const tickNoche = await t.sender.tick({ now: noche });
+    assert.equal(tickNoche.waitingWindow, true);
+    assert.deepEqual(tickNoche.processed, []);
+    assert.ok(tickNoche.remaining.includes(id));
+    assert.equal((await s.call('GET', `/campaigns/${id}`)).body.status, 'programada');
+
+    const dia = new Date('2026-11-13T10:00:00-03:00');
+    const outDia = await t.sender.processCampaign(id, { now: dia });
+    assert.equal(outDia.waitingWindow, undefined);
+    const stDia = (await s.call('GET', `/campaigns/${id}`)).body;
+    assert.equal(stDia.status, 'finalizada');
+    assert.equal(stDia.stats.sent, 1);
   } finally { await t.close(); }
 });

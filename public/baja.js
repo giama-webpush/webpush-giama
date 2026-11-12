@@ -9,10 +9,10 @@
       try { token = token || localStorage.getItem('wp_manage') || ''; } catch (e) { /* */ }
       var sub = null;
       if ('serviceWorker' in navigator) { var reg = await navigator.serviceWorker.getRegistration('/'); sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null; }
-      if (!sub && !token) { msg('No encontramos avisos activos en este navegador. Si seguís recibiendo avisos, desactivalos desde la configuración del navegador.', 'warn'); return; }
+      if (!sub && !token) { msg('No encontramos una suscripción activa en este navegador. Si seguís recibiendo avisos, desactivalos desde la configuración del navegador.', 'warn'); return; }
       await fetch('/api/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub ? { endpoint: sub.endpoint } : { token: token }) });
       if (sub) await sub.unsubscribe();
-      msg('Listo, te diste de baja. No vas a recibir más avisos en este dispositivo.', 'ok');
+      msg('Listo, ya te diste de baja. No vas a recibir más avisos en este dispositivo.', 'ok');
     } catch (e) { msg('No pudimos completar la baja. Probá de nuevo o desactivá las notificaciones desde el navegador.', 'err'); }
     finally { this.disabled = false; }
   });

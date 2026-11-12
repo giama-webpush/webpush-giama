@@ -24,6 +24,9 @@ function autoTags(row) {
   if (row.device_type) t.push(`dispositivo:${row.device_type}`);
   if (row.os) t.push(`so:${row.os}`);
   if (row.origen) t.push(`origen:${row.origen}`);
+  if (row.asesor) t.push(`asesor:${row.asesor}`);
+  if (row.campana) t.push(`campana:${row.campana}`);
+  if (row.utm_source) t.push(`utm_source:${row.utm_source}`);
   return t.map(normTag).filter(Boolean);
 }
 
@@ -97,7 +100,9 @@ async function upsertSubscription(db, cfg, { subscription, meta = {}, userAgent 
     }
     const full = await t.get('SELECT * FROM subscribers WHERE id = ?', id);
     const manual = Array.isArray(meta.tags) ? meta.tags : (meta.tags ? String(meta.tags).split(',') : []);
-    await setTags(t, id, [...autoTags(full), ...manual.slice(0, 10)]);
+    const cotiz = clean(meta.cotiz || meta.cotizacion, 80);
+    const extra = cotiz ? [`cotiz:${cotiz}`] : [];
+    await setTags(t, id, [...autoTags(full), ...extra, ...manual.slice(0, 10)]);
     return { id, created, reactivated, manageToken: full.manage_token, phoneValid: phone ? !!phone.valid : null };
   });
 }

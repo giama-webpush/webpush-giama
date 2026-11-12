@@ -42,7 +42,7 @@ test('el handler de Vercel sirve /health, /s y /sw.js con Service-Worker-Allowed
     assert.equal((await h.json()).ok, true);
     const land = await fetch(`${base}/s`);
     assert.equal(land.status, 200);
-    assert.match(await land.text(), /Activar avisos|Peugeot/i);
+    assert.match(await land.text(), /Quiero recibir las ofertas|Peugeot/i);
     const sw = await fetch(`${base}/sw.js`);
     assert.equal(sw.status, 200);
     assert.equal(sw.headers.get('service-worker-allowed'), '/');

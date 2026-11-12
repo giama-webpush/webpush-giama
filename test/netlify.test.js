@@ -76,11 +76,11 @@ test('el handler de Netlify sirve /health, /s y /sw.js (también bajo el prefijo
 
     const land = await fn(event({ path: '/s' }));
     assert.equal(land.statusCode, 200);
-    assert.match(bodyBuf(land).toString(), /Activar avisos|Peugeot/i);
+    assert.match(bodyBuf(land).toString(), /Quiero recibir las ofertas|Peugeot/i);
 
     const prefixed = await fn(event({ path: '/.netlify/functions/app/s' }));
     assert.equal(prefixed.statusCode, 200);
-    assert.match(bodyBuf(prefixed).toString(), /Activar avisos|Peugeot/i);
+    assert.match(bodyBuf(prefixed).toString(), /Quiero recibir las ofertas|Peugeot/i);
 
     const sw = await fn(event({ path: '/sw.js' }));
     assert.equal(sw.statusCode, 200);
