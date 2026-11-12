@@ -160,3 +160,155 @@ test('la función programada de Netlify corre el tick directo (por tandas)', asy
     assert.equal(st.stats.sent, 8);
   } finally { await t.close(); }
 });
+
+function cookieFrom(res) {
+  const h = res.headers || {};
+  const mv = res.multiValueHeaders || {};
+  const raw = h['set-cookie'] || h['Set-Cookie'] || mv['set-cookie'] || mv['Set-Cookie'] || '';
+  const first = Array.isArray(raw) ? raw[0] : String(raw);
+  return (first.split(';')[0] || '').trim();
+}
+
+test('login por Lambda: body JSON en texto y en base64, cookie de sesión y /me', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-nl-login-'));
+  const silent = { log() {}, warn() {}, error() {} };
+  const fn = createNetlifyFunction({
+    cfg: testCfg(dir, { cookieSecure: true, production: true, trustProxy: true }),
+    logger: silent,
+    sendNotification: async () => ({ statusCode: 201 }),
+  });
+  const ctx = {};
+  const creds = { username: 'admin', password: 'clave-de-test-123' };
+  try {
+    // 1) body en texto plano, content-type json
+    const plain = await fn(event({
+      method: 'POST', path: '/admin/api/login',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.20' },
+      body: JSON.stringify(creds),
+    }), ctx);
+    assert.equal(plain.statusCode, 200, plain.body);
+    const pbody = JSON.parse(bodyBuf(plain).toString());
+    assert.equal(pbody.ok, true);
+    assert.ok(pbody.csrf);
+    const cookiePlain = cookieFrom(plain);
+    assert.match(cookiePlain, /^wp_sid=/);
+    assert.match(String(plain.headers['set-cookie']), /HttpOnly/i);
+    assert.match(String(plain.headers['set-cookie']), /SameSite=Strict/i);
+    assert.match(String(plain.headers['set-cookie']), /Secure/i);
+    assert.ok(plain.multiValueHeaders && plain.multiValueHeaders['set-cookie']);
+
+    // 2) body en base64 (como suele mandarlo Netlify)
+    const raw = JSON.stringify(creds);
+    const b64 = await fn(event({
+      method: 'POST', path: '/admin/api/login',
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(raw),
+    }), ctx);
+    // event() already base64-encodes Buffers; also try explicit
+    assert.equal(b64.statusCode, 200, b64.body);
+
+    const explicit = await fn({
+      httpMethod: 'POST',
+      path: '/admin/api/login',
+      headers: { host: 'ejemplo.netlify.app', 'content-type': 'application/json', accept: '*/*' },
+      body: Buffer.from(raw).toString('base64'),
+      isBase64Encoded: true,
+      requestContext: { httpMethod: 'POST', path: '/admin/api/login' },
+    }, ctx);
+    assert.equal(explicit.statusCode, 200, explicit.body);
+    const cookie = cookieFrom(explicit);
+    assert.match(cookie, /^wp_sid=/);
+
+    // 3) la cookie abre el panel
+    const me = await fn(event({
+      path: '/admin/api/me',
+      headers: { cookie },
+    }), ctx);
+    assert.equal(me.statusCode, 200, me.body);
+    const meBody = JSON.parse(bodyBuf(me).toString());
+    assert.equal(meBody.user.username, 'admin');
+    assert.equal(meBody.csrf, JSON.parse(bodyBuf(explicit).toString()).csrf);
+
+    // 4) sin content-type, body JSON (rewrite que pierde el header)
+    const noCt = await fn({
+      httpMethod: 'POST',
+      path: '/admin/api/login',
+      headers: { host: 'ejemplo.netlify.app', accept: '*/*' },
+      body: raw,
+      isBase64Encoded: false,
+      requestContext: { httpMethod: 'POST', path: '/admin/api/login' },
+    }, ctx);
+    assert.equal(noCt.statusCode, 200, noCt.body);
+
+    // 5) contraseña incorrecta sigue en 401
+    const bad = await fn(event({
+      method: 'POST', path: '/admin/api/login',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'no-es-esa' }),
+    }), ctx);
+    assert.equal(bad.statusCode, 401);
+
+    const { db } = await fn.ensure();
+    db.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('suscripción y subida de imagen por Lambda con body en base64', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-nl-body-'));
+  const silent = { log() {}, warn() {}, error() {} };
+  const fn = createNetlifyFunction({
+    cfg: testCfg(dir, { cookieSecure: false, maxUploadBytes: 20000 }),
+    logger: silent,
+    sendNotification: async () => ({ statusCode: 201 }),
+  });
+  try {
+    const sub = {
+      endpoint: 'https://fcm.googleapis.com/fcm/send/netlify-body-test',
+      keys: { p256dh: Buffer.alloc(65, 1).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') },
+    };
+    const subRes = await fn({
+      httpMethod: 'POST',
+      path: '/api/subscribe',
+      headers: { host: 'ejemplo.netlify.app', 'content-type': 'application/json', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36' },
+      body: Buffer.from(JSON.stringify({ subscription: sub, meta: { marca: 'PEUGEOT', modelo: '208' } })).toString('base64'),
+      isBase64Encoded: true,
+      requestContext: { httpMethod: 'POST', path: '/api/subscribe' },
+    }, {});
+    assert.equal(subRes.statusCode, 201, subRes.body);
+    assert.ok(JSON.parse(bodyBuf(subRes).toString()).manageToken);
+
+    const loginRes = await fn(event({
+      method: 'POST', path: '/admin/api/login',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'clave-de-test-123' }),
+    }), {});
+    assert.equal(loginRes.statusCode, 200, loginRes.body);
+    const cookie = cookieFrom(loginRes);
+    const csrf = JSON.parse(bodyBuf(loginRes).toString()).csrf;
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082', 'hex');
+    const up = await fn({
+      httpMethod: 'POST',
+      path: '/admin/api/uploads',
+      headers: {
+        host: 'ejemplo.netlify.app',
+        'content-type': 'image/png',
+        cookie,
+        'x-csrf-token': csrf,
+        origin: 'https://ejemplo.netlify.app',
+      },
+      body: png.toString('base64'),
+      isBase64Encoded: true,
+      requestContext: { httpMethod: 'POST', path: '/admin/api/uploads' },
+    }, {});
+    assert.equal(up.statusCode, 201, up.body);
+    const upBody = JSON.parse(bodyBuf(up).toString());
+    assert.match(upBody.url, /^\/media\//);
+
+    const { db } = await fn.ensure();
+    db.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -3,13 +3,14 @@
 // Las rutas las reescribe netlify.toml hacia acá (/* → /.netlify/functions/app/:splat).
 const serverless = require('serverless-http');
 const { createHandler, defaultHandler } = require('../../src/handler');
+const { prepareServerlessRequest, normalizeLambdaResponse } = require('../../src/serverless');
 
 const PREFIXES = ['/.netlify/functions/app.js', '/.netlify/functions/app'];
 
 function wrapApp(app) {
   return serverless(app, {
     binary: ['image/*', 'application/octet-stream', 'font/*', 'application/pdf'],
-    request(req) {
+    request(req, event) {
       const url = req.url || '/';
       const pathOnly = url.split('?')[0];
       const qs = url.includes('?') ? url.slice(url.indexOf('?')) : '';
@@ -19,6 +20,7 @@ function wrapApp(app) {
           break;
         }
       }
+      prepareServerlessRequest(req, event);
     },
   });
 }
@@ -32,7 +34,8 @@ function createNetlifyFunction(opts = {}) {
     if (context && typeof context.callbackWaitsForEmptyEventLoop === 'boolean') context.callbackWaitsForEmptyEventLoop = false;
     const { app } = await h.ensure();
     if (!lambda) lambda = wrapApp(app);
-    return lambda(event, context);
+    const res = await lambda(event, context);
+    return normalizeLambdaResponse(res);
   };
   fn.ensure = h.ensure;
   fn.reset = () => { h.reset(); lambda = null; };

@@ -11,6 +11,7 @@ const { createSender } = require('./push');
 const publicRoutes = require('./routes/public');
 const adminRoutes = require('./routes/admin');
 const apiRoutes = require('./routes/api');
+const { recoverServerlessBody } = require('./serverless');
 
 const DEFAULT_SETTINGS = {
   site_name: 'Peugeot Giama',
@@ -64,6 +65,7 @@ async function createApp({ cfg, db, sendNotification, logger = console } = {}) {
   app.disable('x-powered-by');
   if (cfg.trustProxy) app.set('trust proxy', 1);
   app.use(securityHeaders);
+  app.use(recoverServerlessBody);
 
   const health = async (req, res) => {
     let dbOk = true;
