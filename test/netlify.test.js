@@ -53,6 +53,7 @@ test('netlify/functions/app.js exporta un handler Lambda', () => {
   assert.equal(typeof mod.createNetlifyFunction, 'function');
   const tick = require('../netlify/functions/tick-scheduled.js');
   assert.equal(typeof tick.handler, 'function');
+  assert.equal(typeof tick.default, 'function');
   assert.equal(tick.config && tick.config.schedule, '*/5 * * * *');
   const toml = fs.readFileSync(path.join(__dirname, '..', 'netlify.toml'), 'utf8');
   assert.match(toml, /schedule\s*=\s*"\*\/5 \* \* \* \*"/);

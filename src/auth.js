@@ -43,7 +43,14 @@ async function login(db, cfg, username, password) {
   const ok = admin ? verifyPassword(password, admin.pass_hash) : (verifyPassword(password, hashPassword('x')), false);
   if (!ok) return null;
   await db.run('UPDATE admins SET last_login_at = ? WHERE id = ?', nowIso(), admin.id);
-  return { admin, ...(await createSession(db, cfg, admin.id)) };
+  const created = await createSession(db, cfg, admin.id);
+  // Devolver el CSRF de la fila persistida (la sesión de la cookie). Si no, un desfasaje deja el token inválido.
+  const row = await db.get('SELECT csrf, expires_at FROM sessions WHERE token_hash = ?', sha256(created.token));
+  const csrf = (row && row.csrf) || created.csrf;
+  const expires = (row && row.expires_at) || created.expires;
+  // Una sola sesión activa por admin: evita que /me lea una cookie vieja con otro CSRF
+  await db.run('DELETE FROM sessions WHERE admin_id = ? AND token_hash <> ?', admin.id, sha256(created.token));
+  return { admin, token: created.token, csrf, expires };
 }
 
 async function sessionFrom(db, req) {

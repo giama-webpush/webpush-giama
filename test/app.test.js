@@ -347,3 +347,36 @@ test(`[${DRIVER}] supresión borra suscriptor, etiquetas y envíos`, async () =>
     assert.equal((await t.db.get('SELECT COUNT(*) AS n FROM subscriber_tags')).n, 0);
   } finally { await t.close(); }
 });
+
+
+test(`[${DRIVER}] el CSRF de /login es el de la sesión final y sirve para el próximo POST`, async () => {
+  const t = await startTestApp();
+  try {
+    // Primera sesión
+    const a = await adminLogin(t.base);
+    assert.equal(a.res.status, 200);
+    const me1 = await fetch(`${t.base}/admin/api/me`, { headers: { Cookie: a.cookie } });
+    const me1b = await me1.json();
+    assert.equal(me1b.csrf, a.csrf, 'GET /me debe devolver el mismo CSRF que /login');
+    const ok = await a.call('POST', '/segments', { name: 'con-csrf-login', filters: {} });
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+
+    // Relogin: nueva sesión; el CSRF anterior ya no vale; el nuevo coincide con /me y funciona
+    const b = await adminLogin(t.base);
+    assert.notEqual(b.csrf, a.csrf);
+    const me2 = await (await fetch(`${t.base}/admin/api/me`, { headers: { Cookie: b.cookie } })).json();
+    assert.equal(me2.csrf, b.csrf);
+    const stale = await fetch(`${t.base}/admin/api/segments`, {
+      method: 'POST',
+      headers: { Cookie: b.cookie, 'X-CSRF-Token': a.csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'viejo', filters: {} }),
+    });
+    assert.equal(stale.status, 403);
+    const staleBody = await stale.json();
+    assert.match(staleBody.error || '', /CSRF/i);
+    // la cookie vieja ya no autentica (una sesión activa por admin)
+    assert.equal((await fetch(`${t.base}/admin/api/me`, { headers: { Cookie: a.cookie } })).status, 401);
+    const fresh = await b.call('POST', '/segments', { name: 'con-csrf-nuevo', filters: {} });
+    assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+  } finally { await t.close(); }
+});

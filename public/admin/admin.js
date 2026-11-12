@@ -47,8 +47,11 @@
     var f = new FormData(ev.target);
     try {
       var r = await api('/login', { method: 'POST', body: { username: f.get('username'), password: f.get('password') } });
-      S.csrf = r.csrf; ev.target.password.value = '';
-      iniciar();
+      ev.target.password.value = '';
+      S.user = r.user || S.user;
+      S.csrf = r.csrf;
+      // /me confirma la sesión que realmente quedó (cookie + CSRF final)
+      await iniciar();
     } catch (e) { mostrarLogin(e.message); }
   });
   $('#btn-logout').addEventListener('click', async function () { try { await api('/logout', { method: 'POST' }); } catch (e) { /* */ } S.csrf = null; mostrarLogin(); });
