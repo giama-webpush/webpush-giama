@@ -9,3 +9,5 @@ data/
 *.log
 
 .vercel/
+
+.netlify/

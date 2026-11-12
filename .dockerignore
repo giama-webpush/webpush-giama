@@ -11,3 +11,4 @@ data/
 test/
 docs/capturas/
 .vercel
+.netlify

@@ -3,7 +3,24 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const ROOT = path.resolve(__dirname, '..');
+// En local, este archivo vive en src/ (raíz = padre). En Netlify/Vercel el bundle
+// puede quedar en otro directorio: buscamos public/s.html hacia arriba y en cwd.
+function findRoot() {
+  const seen = [];
+  const add = (d) => { try { d = path.resolve(d); } catch { return; } if (!seen.includes(d)) seen.push(d); };
+  if (typeof __dirname === 'string') {
+    add(__dirname);
+    add(path.join(__dirname, '..'));
+    add(path.join(__dirname, '../..'));
+    add(path.join(__dirname, '../../..'));
+  }
+  add(process.cwd());
+  for (const d of seen) {
+    if (fs.existsSync(path.join(d, 'public', 's.html'))) return d;
+  }
+  return path.resolve(__dirname, '..');
+}
+const ROOT = findRoot();
 
 function loadDotEnv(file = path.join(ROOT, '.env')) {
   if (!fs.existsSync(file)) return;
@@ -24,17 +41,32 @@ function bool(v, def = false) {
   return ['1', 'true', 'yes', 'si', 'sí', 'on'].includes(String(v).toLowerCase());
 }
 
+function runningServerless() {
+  const env = process.env;
+  return bool(env.VERCEL, false) || bool(env.NETLIFY, false)
+    || bool(env.AWS_LAMBDA_FUNCTION_NAME, false) || bool(env.AWS_EXECUTION_ENV, false)
+    || bool(env.AWS_LAMBDA, false) || bool(env.SERVERLESS, false);
+}
+
+function isServerlessDev() {
+  const env = process.env;
+  return env.VERCEL_ENV === 'development' || bool(env.NETLIFY_DEV, false) || env.CONTEXT === 'dev';
+}
+
 function getConfig(overrides = {}) {
   const env = process.env;
   const dataDir = path.resolve(ROOT, overrides.dataDir || env.DATA_DIR || 'data');
   const production = (overrides.nodeEnv || env.NODE_ENV) === 'production';
+  const serverless = runningServerless();
+  const defaultBase = env.VERCEL_URL ? `https://${env.VERCEL_URL}` : (env.URL || `http://localhost:${env.PORT || 3000}`);
   const cfg = {
     root: ROOT,
     port: Number(env.PORT || 3000),
     host: env.HOST || '0.0.0.0',
-    // En Vercel, VERCEL=1 y (si no hay BASE_URL) se usa https://$VERCEL_URL como respaldo
-    serverless: bool(env.VERCEL, false) || bool(env.SERVERLESS, false),
-    baseUrl: (env.BASE_URL || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : `http://localhost:${env.PORT || 3000}`)).replace(/\/+$/, ''),
+    // Vercel (VERCEL=1), Netlify (NETLIFY / AWS_LAMBDA_*) o SERVERLESS=1: sin timers, tandas de ~8 s
+    serverless,
+    // BASE_URL; si falta: https://$VERCEL_URL, o $URL (Netlify), o localhost
+    baseUrl: (env.BASE_URL || defaultBase).replace(/\/+$/, ''),
     production,
     dataDir,
     dbFile: overrides.dbFile || (env.DB_PATH ? path.resolve(ROOT, env.DB_PATH) : path.join(dataDir, 'webpush.db')),
@@ -51,13 +83,13 @@ function getConfig(overrides = {}) {
     phoneHashSecret: env.PHONE_HASH_SECRET || '',
     phoneEncKey: env.PHONE_ENC_KEY || '',
     cookieSecure: bool(env.COOKIE_SECURE, production),
-    trustProxy: bool(env.TRUST_PROXY, bool(env.VERCEL, false)),
+    trustProxy: bool(env.TRUST_PROXY, serverless),
     timezone: env.APP_TIMEZONE || 'America/Argentina/Buenos_Aires',
     schedulerIntervalMs: Number(env.SCHEDULER_INTERVAL_MS || 15000),
-    // En Vercel (Hobby, tope 10 s) lotes más chicos y un presupuesto de tiempo holgado
-    sendConcurrency: Number(env.SEND_CONCURRENCY || (bool(env.VERCEL, false) ? 8 : 10)),
-    sendBatchSize: Number(env.SEND_BATCH_SIZE || (bool(env.VERCEL, false) ? 40 : 200)),
-    tickBudgetMs: env.TICK_BUDGET_MS != null && env.TICK_BUDGET_MS !== '' ? Number(env.TICK_BUDGET_MS) : (bool(env.VERCEL, false) ? 8000 : 0),
+    // En serverless (Vercel Hobby 10 s / Netlify Functions ~10–26 s) lotes más chicos y presupuesto holgado
+    sendConcurrency: Number(env.SEND_CONCURRENCY || (serverless ? 8 : 10)),
+    sendBatchSize: Number(env.SEND_BATCH_SIZE || (serverless ? 40 : 200)),
+    tickBudgetMs: env.TICK_BUDGET_MS != null && env.TICK_BUDGET_MS !== '' ? Number(env.TICK_BUDGET_MS) : (serverless ? 8000 : 0),
     inlineSendMax: Number(env.INLINE_SEND_MAX || 40),
     maxUploadBytes: Math.round(Number(env.MAX_UPLOAD_KB || 700) * 1024),   // imágenes guardadas en la base
     sessionHours: Number(env.SESSION_HOURS || 12),
@@ -66,17 +98,19 @@ function getConfig(overrides = {}) {
   return cfg;
 }
 
-function vercelRequiresTurso(cfg = {}) {
-  // En el hosting de Vercel el disco es efímero. `vercel dev` (VERCEL_ENV=development) corre en tu máquina y puede usar SQLite local.
-  if (!bool(process.env.VERCEL, false)) return false;
-  if (process.env.VERCEL_ENV === 'development') return false;
+function serverlessRequiresTurso(cfg = {}) {
+  // En Vercel y Netlify el disco es efímero. `vercel dev` / `netlify dev` corren en tu máquina y pueden usar SQLite local.
+  if (!runningServerless()) return false;
+  if (isServerlessDev()) return false;
   return !(cfg.tursoUrl && cfg.tursoToken);
 }
 
 function assertStorage(cfg) {
-  if (vercelRequiresTurso(cfg)) {
-    throw new Error('En Vercel el filesystem es efímero: definí TURSO_DATABASE_URL y TURSO_AUTH_TOKEN. Sin Turso la base se pierde en cada despliegue.');
+  if (serverlessRequiresTurso(cfg)) {
+    throw new Error('En Vercel y Netlify el filesystem es efímero: definí TURSO_DATABASE_URL y TURSO_AUTH_TOKEN. Sin Turso la base se pierde en cada despliegue.');
   }
 }
 
-module.exports = { loadDotEnv, getConfig, assertStorage, vercelRequiresTurso, ROOT };
+const vercelRequiresTurso = serverlessRequiresTurso;
+
+module.exports = { loadDotEnv, getConfig, assertStorage, serverlessRequiresTurso, vercelRequiresTurso, runningServerless, isServerlessDev, ROOT };

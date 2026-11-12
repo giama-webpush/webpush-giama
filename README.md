@@ -65,7 +65,7 @@ Todas están en [`.env.example`](.env.example). Las importantes:
 
 `UPLOADS_DIR` **no se usa**: las imágenes subidas se guardan dentro de la base (tabla `media`) para no depender del disco del hosting. También se puede usar una URL externa (https) en cada pieza.
 
-En **Vercel**, `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` son obligatorios (el filesystem no persiste). `TICK_BUDGET_MS` e `INLINE_SEND_MAX` aplican al envío por tandas. Detalle en la sección de despliegue en Vercel.
+En **Vercel** y **Netlify**, `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` son obligatorios (el filesystem no persiste). `TICK_BUDGET_MS` e `INLINE_SEND_MAX` aplican al envío por tandas. Detalle en las secciones de despliegue.
 
 Los secretos van **solo** en `.env` o en el panel de variables del hosting. Nunca en el repositorio.
 
@@ -183,7 +183,61 @@ En *Project → Settings → Environment Variables* (Production, y Preview si qu
 
 Para probar el handler en local alcanza `npm start` (o los tests que importan `api/index.js`). `vercel dev` exige iniciar sesión en Vercel; si lo usás, `VERCEL_ENV=development` permite SQLite local. Local, Docker y Render siguen igual: `npm start` o la imagen, con programador en memoria mientras el proceso esté despierto. El ping no molesta si también lo usás ahí.
 
-## 6. Docker / VPS
+
+## 6. Despliegue en Netlify (plan Free)
+
+Netlify Functions corre cada pedido en una función (tope ~26–60 s en sincrónicas; **30 s** en las programadas). El disco es **efímero**, así que:
+
+- La base **tiene que ser Turso**. Si falta `TURSO_DATABASE_URL` o `TURSO_AUTH_TOKEN`, la app no arranca (salvo `netlify dev` / `NETLIFY_DEV`, que pueden usar SQLite local).
+- No hay programador en memoria. Las campañas se procesan por tandas (~8 s) y se retoman en el próximo tick.
+- El plan **Free incluye Scheduled Functions** (está en todos los planes). Esta app trae `netlify/functions/tick-scheduled.js` con cron `*/5 * * * *` (UTC) que llama al tick **en directo**, sin HTTP ni `ADMIN_KEY`. Reemplaza el ping externo en este hosting.
+- El cron **solo corre solo en el deploy publicado** (producción). En Deploy Preview hay que dispararlo a mano desde *Functions → tick-scheduled → Run now*.
+- `BASE_URL` es la URL pública `https://...`. Si falta, se usa `process.env.URL` (la que Netlify define sola).
+
+Un ping cada 5 min, 8 s a 1 GB, consume del orden de ~10 créditos/mes de los 300 del plan Free (más el tráfico normal de la landing y el panel). Si se acaban los créditos, el sitio se pausa hasta el mes siguiente.
+
+### Variables a cargar en Netlify
+
+En *Site configuration → Environment variables* (o *Project configuration → Environment variables*), para *Production*:
+
+| Variable | Obligatoria | Notas |
+|---|---|---|
+| `BASE_URL` | sí (prod) | Ej. `https://webpush-giama.netlify.app` o tu dominio |
+| `NODE_ENV` | sí | `production` |
+| `ADMIN_PASSWORD` | sí | Mínimo 8 caracteres. Usuario `admin` si no definís `ADMIN_USER`. |
+| `ADMIN_KEY` | sí | Sigue sirviendo para la API (`/api/subscribers/tag`, `/api/campaigns/send`) y para un ping de respaldo a `/api/cron/tick`. El cron interno no la usa. |
+| `VAPID_PUBLIC_KEY` | sí | Generadas una sola vez con `npm run vapid -- --print`. |
+| `VAPID_PRIVATE_KEY` | sí | **No las cambies nunca** después de tener suscriptores. |
+| `VAPID_SUBJECT` | sí | `mailto:alguien@tudominio.com.ar` |
+| `TURSO_DATABASE_URL` | sí | `libsql://...turso.io` |
+| `TURSO_AUTH_TOKEN` | sí | Token de Turso |
+| `PHONE_HASH_SECRET` | sí | No cambiarlo después de tener datos. |
+| `ADMIN_USER` | no | Por defecto `admin`. |
+| `PHONE_ENC_KEY` | no | Si la definís, el panel puede mostrar el teléfono (queda cifrado). |
+| `APP_TIMEZONE` | no | Por defecto `America/Argentina/Buenos_Aires`. |
+| `MAX_UPLOAD_KB` | no | Por defecto 700. |
+| `TICK_BUDGET_MS` | no | Por defecto 8000 en serverless. |
+| `INLINE_SEND_MAX` | no | Por defecto 40. |
+| `SEND_BATCH_SIZE` / `SEND_CONCURRENCY` | no | Por defecto 40 y 8 en serverless. |
+
+`NETLIFY`, `URL` y `TRUST_PROXY` los resuelve la plataforma. No hace falta `DB_PATH` ni `PORT`.
+
+### Paso a paso
+
+1. Creá la base en Turso y guardá URL y token.
+2. En tu máquina: `npm run vapid -- --print` y guardá las claves en un gestor de contraseñas (no las pegues en tickets ni chats).
+3. El repo (por ejemplo `https://github.com/giama-webpush/webpush-giama`) ya trae `netlify.toml`.
+4. En [app.netlify.com](https://app.netlify.com) → *Add new site → Import an existing project* → GitHub → elegí `giama-webpush/webpush-giama`.
+5. La config de build se lee sola del `netlify.toml` (comando de build inocuo, *publish* `public`, *functions* `netlify/functions`, Node 22, esbuild con `@libsql/client` externo y `public/**` incluido). No hace falta un framework.
+6. Cargá las variables de la tabla **antes** del primer deploy (o redesplegá después).
+7. Deploy. Verificá `https://<sitio>.netlify.app/health`, la landing `/s` y el panel `/admin`.
+8. En *Functions* tiene que aparecer `tick-scheduled` con el badge *Scheduled* y la próxima ejecución. Podés pulsar *Run now* para probar. No hace falta cron-job.org ni GitHub Actions en Netlify; esos quedan como respaldo o para Vercel/Render.
+
+**Importante:** no cambies las claves VAPID una vez que haya suscriptores.
+
+Para probar el handler en local, `npx netlify functions:serve --offline` (no pide login) o `npm start`. `netlify dev` sí puede pedir cuenta.
+
+## 7. Docker / VPS
 
 ```bash
 docker build -t webpush-giama .
@@ -196,7 +250,7 @@ Sin Docker: `npm ci --omit=dev && npm start` con un gestor tipo systemd o pm2. E
 
 ---
 
-## 7. Cómo se usa
+## 8. Cómo se usa
 
 ### Links de suscripción
 En *Links de suscripción* armás URLs como:
@@ -228,7 +282,7 @@ iOS solo recibe push desde la web **instalada en pantalla de inicio** (iOS/iPadO
 
 ---
 
-## 8. Marca y piezas
+## 9. Marca y piezas
 
 Los archivos de marca están en `public/brand/` (íconos simples generados a partir del logo, fáciles de reemplazar):
 
@@ -246,7 +300,7 @@ Para usar los definitivos sin tocar el código: dejalos con esos nombres en una 
 
 ---
 
-## 9. Privacidad y seguridad
+## 10. Privacidad y seguridad
 
 - Solo opt-in: el navegador pide permiso únicamente cuando la persona toca **Activar avisos**. Texto de consentimiento y `/privacidad` editables. **La política de privacidad es un borrador: revisarla legalmente** (Ley 25.326, AAIP) antes de publicar.
 - Baja en un toque desde la landing o `/baja`, y desde el navegador. Las bajas no reciben más avisos.
@@ -256,7 +310,7 @@ Para usar los definitivos sin tocar el código: dejalos con esos nombres en una 
 
 ---
 
-## 10. API
+## 11. API
 
 Autenticación: `Authorization: Bearer <ADMIN_KEY>` o `X-API-Key: <ADMIN_KEY>`. Detalle en [`docs/api.md`](docs/api.md).
 
@@ -274,21 +328,24 @@ curl -X POST https://avisos.tudominio.com.ar/api/campaigns/send \
 
 ---
 
-## 11. Estructura
+## 12. Estructura
 
 ```
 src/            servidor (Express 5): config, db (adaptador), rutas, envío push, segmentos, teléfonos
 public/         landing, service worker, panel (SPA sin build), marca
+api/            handler serverless para Vercel
+netlify/        Functions para Netlify (app HTTP + tick-scheduled cada 5 min)
 scripts/        vapid.js, seed.js
 test/           tests (node:test) con push simulado
 docs/           modelo de datos, API, capturas
 ```
 
-## 12. Limitaciones conocidas
+## 13. Limitaciones conocidas
 
 - Probado de punta a punta con Chrome de escritorio (FCM). No probado aún en iPhone real, Safari macOS, Firefox ni Android físico.
-- Turso remoto, Render y Vercel no se probaron con un deploy real desde acá (sí el mismo driver libSQL en modo archivo, el handler serverless y el tick por tandas).
-- En Vercel Hobby cada función dura como máximo 10 s: un envío grande se completa en varios pings (cada 5 min). El cron de GitHub Actions en un repo público puede atrasarse unos minutos.
+- Turso remoto, Render y Vercel no se probaron con un deploy real desde acá. En Netlify se probó `netlify functions:serve --offline` (sin login): `/health`, `/s`, `/sw.js` y el ícono de marca respondieron bien. El cron programado en producción no se llegó a ver publicado.
+- En Vercel Hobby cada función dura como máximo 10 s; en Netlify el tick programado tiene 30 s. Un envío grande se completa en varias tandas (cada 5 min).
+- El cron interno de Netlify solo corre en el deploy de producción publicado (no en previews).
 - El rate limit es por instancia en memoria: en serverless no se comparte entre invocaciones (es una red de contención, no un cupo global).
 - Una sola instancia en local/Docker/Render. Para decenas de miles de suscriptores por campaña conviene un VPS con archivo local o subir `SEND_CONCURRENCY`.
 - Las métricas de "entregado" dependen de que el service worker reporte; algunos navegadores lo limitan, así que es un mínimo.

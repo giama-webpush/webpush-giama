@@ -6,6 +6,9 @@ const { upsertSubscription, unsubscribe } = require('../subscribers');
 const { targetUrl } = require('../push');
 const { rateLimiter } = require('../util');
 
+// `send` ignora rutas con segmentos .dot (p. ej. .netlify/functions-serve/... en netlify dev)
+const SEND = { dotfiles: 'allow' };
+
 module.exports = function publicRoutes(ctx) {
   const { db, cfg, vapid, sender, logger } = ctx;
   const r = express.Router();
@@ -14,14 +17,14 @@ module.exports = function publicRoutes(ctx) {
   const trackLimit = rateLimiter({ windowMs: 60e3, max: 120 });
 
   r.get('/', (req, res) => res.redirect(302, '/s'));
-  r.get(['/s', '/s/'], (req, res) => res.sendFile(path.join(cfg.root, 'public/s.html')));
-  r.get('/privacidad', (req, res) => res.sendFile(path.join(cfg.root, 'public/privacidad.html')));
-  r.get('/baja', (req, res) => res.sendFile(path.join(cfg.root, 'public/baja.html')));
+  r.get(['/s', '/s/'], (req, res) => res.sendFile(path.join(cfg.root, 'public/s.html'), SEND));
+  r.get('/privacidad', (req, res) => res.sendFile(path.join(cfg.root, 'public/privacidad.html'), SEND));
+  r.get('/baja', (req, res) => res.sendFile(path.join(cfg.root, 'public/baja.html'), SEND));
 
   r.get('/sw.js', (req, res) => {
     res.set('Service-Worker-Allowed', '/');
     res.set('Cache-Control', 'no-cache');
-    res.type('application/javascript').sendFile(path.join(cfg.root, 'public/sw.js'));
+    res.type('application/javascript').sendFile(path.join(cfg.root, 'public/sw.js'), SEND);
   });
 
   r.get('/manifest.webmanifest', async (req, res) => {

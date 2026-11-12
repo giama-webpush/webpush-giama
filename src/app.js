@@ -74,8 +74,8 @@ async function createApp({ cfg, db, sendNotification, logger = console } = {}) {
   app.get('/healthz', health);
 
   // Assets de marca: primero BRAND_DIR (reemplazos del Diseñador), si no, public/brand
-  if (cfg.brandDir && fs.existsSync(cfg.brandDir)) app.use('/brand', express.static(cfg.brandDir, { maxAge: '1h' }));
-  app.use('/brand', express.static(path.join(cfg.root, 'public/brand'), { maxAge: '1h' }));
+  if (cfg.brandDir && fs.existsSync(cfg.brandDir)) app.use('/brand', express.static(cfg.brandDir, { maxAge: '1h', dotfiles: 'allow' }));
+  app.use('/brand', express.static(path.join(cfg.root, 'public/brand'), { maxAge: '1h', dotfiles: 'allow' }));
   // Al despertar, o en serverless (sin timers), una visita puede retomar campañas atrasadas.
   // El trabajo se persiste por tanda en la DB; /api/cron/tick es el camino confiable.
   app.use((req, res, next) => {
@@ -90,8 +90,8 @@ async function createApp({ cfg, db, sendNotification, logger = console } = {}) {
   app.use(publicRoutes(ctx));
   app.use('/admin/api', adminRoutes(ctx));
   app.use('/api', apiRoutes(ctx));
-  app.use('/admin', express.static(path.join(cfg.root, 'public/admin'), { index: 'index.html' }));
-  app.use(express.static(path.join(cfg.root, 'public'), { index: false, extensions: ['html'] }));
+  app.use('/admin', express.static(path.join(cfg.root, 'public/admin'), { index: 'index.html', dotfiles: 'allow' }));
+  app.use(express.static(path.join(cfg.root, 'public'), { index: false, extensions: ['html'], dotfiles: 'allow' }));
 
   app.use((req, res) => res.status(404).type('text/plain').send('No encontrado'));
   app.use((err, req, res, next) => {

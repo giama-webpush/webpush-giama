@@ -1,0 +1,35 @@
+# Despliegue en Netlify Functions (plan Free). Sin build de frontend: Express corre en una función.
+[build]
+  command = "node -e \"console.log('webpush: listo (sin build de frontend)')\""
+  publish = "public"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NODE_ENV = "production"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # @libsql/client trae binarios nativos / wasm que esbuild no debe intentar bundlear
+  external_node_modules = ["@libsql/client"]
+  included_files = ["public/**"]
+
+# Tick cada 5 min (UTC). Disponible en el plan Free. Solo en el deploy publicado.
+# Límite de ejecución: 30 s. El tick corta ~8 s y deja el resto en la base.
+[functions."tick-scheduled"]
+  schedule = "*/5 * * * *"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Service-Worker-Allowed = "/"
+    Cache-Control = "no-cache"
+    Content-Type = "application/javascript; charset=utf-8"
+
+# force=true: todo pasa por la función (mismas rutas que en local / Vercel).
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/app/:splat"
+  status = 200
+  force = true
