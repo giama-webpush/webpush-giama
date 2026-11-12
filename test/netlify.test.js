@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { getConfig, assertStorage } = require('../src/config');
 const { createApp } = require('../src/app');
 const { createScheduledHandler } = require('../src/handler');
@@ -311,5 +312,161 @@ test('suscripción y subida de imagen por Lambda con body en base64', async () =
     db.close();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function tickChildEnv(dataDir, dbFile) {
+  // Entorno mínimo: no heredamos TURSO_*/secretos del proceso (loadDotEnv no pisa claves ya definidas).
+  const env = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME || '',
+    NODE_ENV: 'test',
+    NETLIFY: 'true',
+    NETLIFY_DEV: 'true',
+    CONTEXT: 'dev',
+    DATA_DIR: dataDir,
+    DB_PATH: dbFile,
+    DB_DRIVER: process.env.TEST_DB_DRIVER || 'libsql',
+    ADMIN_USER: 'admin',
+    ADMIN_PASSWORD: 'clave-de-test-123',
+    ADMIN_KEY: 'api-key-de-test',
+    PHONE_HASH_SECRET: 'secreto-test',
+    COOKIE_SECURE: 'false',
+    SCHEDULER_INTERVAL_MS: '999999',
+    TICK_BUDGET_MS: '8000',
+    BASE_URL: 'https://ejemplo.netlify.app',
+    TURSO_DATABASE_URL: '',
+    TURSO_AUTH_TOKEN: '',
+    VAPID_PUBLIC_KEY: '',
+    VAPID_PRIVATE_KEY: '',
+    VAPID_SUBJECT: 'mailto:admin@example.com',
+  };
+  return env;
+}
+
+function invokeTickModule(modulePath, { dataDir, dbFile, cwd }) {
+  const root = cwd || path.join(__dirname, '..');
+  const script = `
+'use strict';
+const tick = require(${JSON.stringify(modulePath)});
+const logs = [];
+const wrap = (orig) => (...a) => {
+  logs.push(a.map((x) => typeof x === 'string' ? x : (x && x.stack) || String(x)).join(' '));
+  orig.apply(console, a);
+};
+console.log = wrap(console.log);
+console.error = wrap(console.error);
+function normalize(res) {
+  if (res && typeof Response === 'function' && res instanceof Response) {
+    return res.text().then((body) => ({ kind: 'Response', statusCode: res.status, body }));
+  }
+  return Promise.resolve({ kind: 'lambda', statusCode: res && res.statusCode, body: res && res.body });
+}
+(async () => {
+  if (typeof tick.handler !== 'function' || typeof tick.default !== 'function') {
+    throw new Error('faltan exports handler/default');
+  }
+  const h = await tick.handler({}, { callbackWaitsForEmptyEventLoop: true });
+  const req = (typeof Request === 'function')
+    ? new Request('https://ejemplo.netlify.app/.netlify/functions/tick-scheduled', { method: 'POST' })
+    : {};
+  const d = await tick.default(req, {});
+  const handler = await normalize(h);
+  const def = await normalize(d);
+  process.stdout.write(JSON.stringify({ handler, default: def, logs }) + '\\n');
+})().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+`;
+  return spawnSync(process.execPath, ['-e', script], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...tickChildEnv(dataDir, dbFile), NODE_PATH: path.join(root, 'node_modules') },
+  });
+}
+
+function assertTickInvocation(r, label) {
+  assert.equal(r.status, 0, `${label} falló: ${(r.stderr || r.stdout || '').slice(0, 3000)}`);
+  const line = (r.stdout || '').trim().split('\n').filter(Boolean).at(-1);
+  assert.ok(line, `${label}: sin JSON de salida`);
+  const out = JSON.parse(line);
+  assert.equal(out.handler.statusCode, 200, `${label} handler: ${out.handler.body}`);
+  assert.equal(out.default.statusCode, 200, `${label} default: ${out.default.body}`);
+  const hb = JSON.parse(out.handler.body);
+  const db = JSON.parse(out.default.body);
+  assert.equal(hb.ok, true);
+  assert.equal(hb.source, 'schedule');
+  assert.ok(Array.isArray(hb.processed));
+  assert.equal(db.ok, true);
+  assert.equal(db.source, 'schedule');
+  const joined = (out.logs || []).join('\n');
+  assert.match(joined, /\[tick-scheduled\] inicio/);
+  assert.match(joined, /\[tick-scheduled\] resultado/);
+  assert.match(joined, /"ok":true/);
+  assert.doesNotMatch(joined, /tickBudgetMs/);
+  return out;
+}
+
+test('createScheduledHandler arma el mismo ctx que /api/cron/tick (cfg en ctx, no suelto)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-sched-ctx-'));
+  const silent = { log() {}, warn() {}, error() {} };
+  const { createHandler } = require('../src/handler');
+  const fn = createHandler({
+    cfg: testCfg(dir, { tickBudgetMs: 8000 }),
+    logger: silent,
+    sendNotification: async () => ({ statusCode: 201 }),
+  });
+  try {
+    const boot = await fn.ensure();
+    assert.ok(boot.sender);
+    assert.ok(boot.ctx && boot.ctx.cfg && typeof boot.ctx.cfg.tickBudgetMs === 'number');
+    // El bug de producción: ensure() devuelve { app, db, sender, ctx } y cfg vive en ctx.cfg.
+    // createScheduledHandler no debe asumir cfg en el top-level.
+    const run = createScheduledHandler({ handler: fn });
+    const a = await run({}, { callbackWaitsForEmptyEventLoop: true });
+    assert.equal(a.statusCode, 200);
+    const body = JSON.parse(a.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.source, 'schedule');
+    assert.ok(Array.isArray(body.processed));
+    boot.db.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('tick-scheduled: handler y default se invocan como Netlify y loguean resultado', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-tick-invoke-'));
+  const dbFile = path.join(dir, 'test.db');
+  try {
+    const tickPath = path.join(__dirname, '..', 'netlify/functions/tick-scheduled.js');
+    const r = invokeTickModule(tickPath, { dataDir: dir, dbFile, cwd: path.join(__dirname, '..') });
+    assertTickInvocation(r, 'tick-scheduled fuente');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('el bundle esbuild de tick-scheduled se invoca como Netlify y loguea resultado', async () => {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-tick-bundle-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-tick-bundle-db-'));
+  const outfile = path.join(outDir, 'tick-scheduled.js');
+  const root = path.join(__dirname, '..');
+  const bundled = spawnSync('npx', ['--yes', 'esbuild', 'netlify/functions/tick-scheduled.js', '--bundle', '--platform=node', '--format=cjs', `--outfile=${outfile}`, '--external:@libsql/client', '--log-level=warning'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 120000,
+  });
+  try {
+    assert.equal(bundled.status, 0, (bundled.stderr || bundled.stdout || 'esbuild falló').slice(0, 2000));
+    assert.ok(fs.existsSync(outfile));
+    const js = fs.readFileSync(outfile, 'utf8');
+    assert.match(js, /require\(["']@libsql\/client["']\)/, '@libsql/client debe quedar como require externo');
+    const r = invokeTickModule(outfile, { dataDir, dbFile: path.join(dataDir, 'test.db'), cwd: root });
+    const out = assertTickInvocation(r, 'tick-scheduled bundle');
+    assert.equal(out.handler.kind, 'lambda');
+    assert.equal(out.default.kind, 'Response');
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });

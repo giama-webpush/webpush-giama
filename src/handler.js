@@ -32,15 +32,32 @@ function createHandler(opts = {}) {
   return handler;
 }
 
-// Tick invocado por el cron de Netlify (o tests). No usa HTTP ni ADMIN_KEY: corre dentro de la función.
+// createApp / ensure() devuelven { app, db, sender, ctx } (cfg vive en ctx.cfg).
+// Algunos tests inyectan { sender, cfg } directo. Unificamos las dos formas.
+function contextFromBoot(boot) {
+  if (!boot) throw new Error('El tick programado no pudo inicializar la app');
+  const ctx = boot.ctx || boot;
+  const sender = boot.sender || ctx.sender;
+  const cfg = boot.cfg || ctx.cfg;
+  if (!sender || typeof sender.tick !== 'function') {
+    throw new Error('El tick programado no pudo obtener el sender');
+  }
+  if (!cfg) throw new Error('El tick programado no pudo obtener la config');
+  return { sender, cfg, db: boot.db || ctx.db, ctx };
+}
+
+// Tick invocado por el cron de Netlify (o tests). Mismo arranque que /api/cron/tick
+// (loadDotEnv + getConfig + assertStorage + createApp → db Turso/local y sender).
+// No usa HTTP ni ADMIN_KEY: corre dentro de la función.
 function createScheduledHandler(opts = {}) {
   const hasCustom = opts.handler || opts.cfg || opts.overrides || opts.db || opts.sendNotification || opts.logger;
   const h = opts.handler || (hasCustom ? createHandler(opts) : defaultHandler());
   const { nowIso } = require('./db');
   return async function scheduledTick(_event, context) {
     if (context && typeof context.callbackWaitsForEmptyEventLoop === 'boolean') context.callbackWaitsForEmptyEventLoop = false;
-    const { sender, cfg } = await h.ensure();
-    const out = await sender.tick({ budgetMs: (opts.budgetMs != null ? opts.budgetMs : cfg.tickBudgetMs) || 8000 });
+    const { sender } = contextFromBoot(await h.ensure());
+    const tickOpts = opts.budgetMs != null ? { budgetMs: opts.budgetMs } : {};
+    const out = await sender.tick(tickOpts);
     return {
       statusCode: 200,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -55,4 +72,4 @@ function defaultHandler() {
   return createHandler();
 }
 
-module.exports = { createHandler, defaultHandler, createScheduledHandler };
+module.exports = { createHandler, defaultHandler, createScheduledHandler, contextFromBoot };
